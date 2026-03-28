@@ -25,7 +25,7 @@ if uploaded_file:
     with st.spinner("🤖 AI is reviewing compliance..."):
         try:
             # Prepare the Model
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel('models/gemini-1.5-flash-latest')
             
             # Convert file for AI
             file_data = uploaded_file.read()
