@@ -1,61 +1,45 @@
 import streamlit as st
-import pandas as pd
-import requests
-import base64
+import google.generativeai as genai
 
 # 1. Setup
 st.set_page_config(page_title="MTC AI Validator", layout="wide")
 api_key = st.secrets.get("GOOGLE_API_KEY")
 
+# 2. THE VERSION LOCK: Forcing V1 Stable
+if api_key:
+    genai.configure(api_key=api_key, transport='rest')
+else:
+    st.error("Missing API Key in Secrets!")
+
 st.title("🏗️ Engineering MTC Validator")
 
-# 2. Sidebar
+# 3. Sidebar
 with st.sidebar:
     st.header("⚙️ Criteria")
     target_material = st.selectbox("Grade", ["Q355D", "A106 Gr. B", "A516 Gr. 65"])
 
-# 3. File Upload
+# 4. Main Upload
 uploaded_file = st.file_uploader("Upload MTC (PDF/Image)", type=['pdf', 'jpg', 'png'])
 
-if uploaded_file and api_key:
-    with st.spinner("🤖 AI Reviewing via Direct Stable Connection..."):
+if uploaded_file:
+    with st.spinner("🤖 AI Reviewing (Stable V1 Mode)..."):
         try:
-            # Convert file to Base64
+            # Using the absolute most compatible model name
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            
             uploaded_file.seek(0)
-            file_data = base64.b64encode(uploaded_file.read()).decode('utf-8')
+            file_data = uploaded_file.read()
             m_type = "application/pdf" if uploaded_file.name.lower().endswith('.pdf') else "image/jpeg"
             
-           # --- THE UNIVERSAL STABLE URL ---
-url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash-latest:generateContent?key={api_key}"
+            # The Content Request
+            response = model.generate_content([
+                {"mime_type": m_type, "data": file_data},
+                f"You are a Quality Control Engineer. Identify Heat Number, Grade, and Hardness for {target_material}."
+            ])
             
-            # --- THE PAYLOAD ---
-            payload = {
-                "contents": [{
-                    "parts": [
-                        {"text": f"You are a Quality Control Engineer. Extract Heat Number, Grade, and Hardness for {target_material} from this MTC certificate."},
-                        {
-                            "inlineData": {
-                                "mimeType": m_type,
-                                "data": file_data
-                            }
-                        }
-                    ]
-                }]
-            }
+            st.subheader("📝 Results")
+            st.markdown(response.text)
             
-            # Send the request
-            response = requests.post(url, json=payload)
-            res_json = response.json()
-            
-            if "candidates" in res_json:
-                output_text = res_json['candidates'][0]['content']['parts'][0]['text']
-                st.subheader("📝 Extraction Results")
-                st.markdown(output_text)
-            else:
-                st.error(f"API Error Detail: {res_json}")
-                
         except Exception as e:
-            st.error(f"Technical Failure: {str(e)}")
-
-elif not api_key:
-    st.warning("API Key missing from Secrets. Please add the new key ending in 'Mbl'.")
+            st.error(f"Analysis failed: {str(e)}")
+            st.info("If you see a 404, we may need to regenerate your API Key in Google AI Studio one more time.")
