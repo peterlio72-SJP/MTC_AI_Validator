@@ -1,76 +1,61 @@
-import streamlit as st
+
+       import streamlit as st
+import pandas as pd
 import google.generativeai as genai
 
-# Correctly fetching the secret from the box you just filled
+# --- 1. AI CONFIGURATION ---
 if "GOOGLE_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 else:
-    st.error("API Key not found in Secrets. Please check Streamlit Cloud settings.")
-import streamlit as st
-import pandas as pd
+    st.error("Missing API Key in Secrets!")
 
-# --- Professional UI Setup ---
 st.set_page_config(page_title="MTC AI Validator Pro", layout="wide")
 
-# Hide Streamlit branding
-st.markdown("""
-    <style>
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- SIDEBAR: ENGINEERING SELECTIONS ---
+# --- 2. SIDEBAR ---
 with st.sidebar:
     st.header("⚙️ Design Criteria")
-    
-    # Selection 1: Engineering Code
-    eng_code = st.selectbox(
-        "Application Category",
-        ["Pressure Parts (ASME Sec VIII/B31.3)", "Structural Steel (AWS D1.1)", "General Construction"]
-    )
-    
-    # Selection 2: Material Grade Selection
-    if eng_code == "Pressure Parts (ASME Sec VIII/B31.3)":
-        target_material = st.selectbox("Select ASTM Grade", ["A106 Gr. B", "A516 Gr. 65", "A105N", "A333 Gr. 6"])
-    else:
-        target_material = st.selectbox("Select Structural Grade", ["Q355D", "S355J2", "A992", "Q235B"])
-    
-    # Selection 3: Sour Service Toggle
-    sour_service = st.toggle("NACE MR0175 / Sour Service", help="Reduces Hardness limit to 22 HRC / 237 HBW")
-    
-    st.divider()
-    st.info(f"Reviewing for: *{eng_code}*")
+    eng_code = st.selectbox("Application Category", ["Pressure Parts (ASME)", "Structural Steel (AWS)"])
+    target_material = st.selectbox("Select Grade", ["Q355D", "S355J2", "A106 Gr. B", "A516 Gr. 65"])
+    sour_service = st.toggle("NACE MR0175 / Sour Service")
 
-# --- MAIN SCREEN ---
+# --- 3. MAIN UI ---
 st.title("🏗️ Engineering MTC Validator")
-st.write(f"Validating document against *{target_material}* requirements.")
-
-uploaded_file = st.file_uploader("Drop MTC File", type=['pdf', 'jpg', 'png'])
+uploaded_file = st.file_uploader("Drop MTC File (PDF or Image)", type=['pdf', 'jpg', 'png'])
 
 if uploaded_file:
-    # AUTOMATED LOGIC
-    with st.spinner("Processing..."):
-        
-        # Hardness Logic based on selection
-        limit_hbw = 237 if sour_service else 280
-        
-        # CE Limit (Carbon Equivalent)
-        ce_limit = 0.43 if "355" in target_material or "516" in target_material else 0.45
-        
-        st.success(f"File Received: {uploaded_file.name}")
-        
-        # Results Display Table
-        results_data = {
-            "QC Parameter": ["Hardness Limit", "Max Carbon Equivalent (CE)", "Heat Treatment", "Material Group"],
-            "Requirement": [f"≤ {limit_hbw} HBW", f"≤ {ce_limit}", "Normalized" if sour_service else "As-Rolled/Any", "P-No 1 / Group II"],
-            "Found on MTC": ["Extracting...", "Calculating...", "Detecting...", "Detecting..."],
-            "Status": ["⏳", "⏳", "⏳", "⏳"]
-        }
-        
-        st.subheader("📊 Automated Compliance Summary")
-        st.table(pd.DataFrame(results_data))
-        
-        if sour_service:
-            st.warning("⚠️ CRITICAL: Hardness values must be verified per NACE MR0175 Table A.2.")
+    with st.spinner("🤖 AI is reviewing compliance..."):
+        try:
+            # Prepare the Model
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            
+            # Convert file for AI
+            file_data = uploaded_file.read()
+            mime_type = "application/pdf" if uploaded_file.name.endswith('.pdf') else "image/jpeg"
+            
+            # The Prompt: Telling AI what to look for based on your buttons
+            prompt = f"""
+            Review this MTC for {target_material} ({eng_code}). 
+            Sour Service requirement: {sour_service}.
+            Extract values for:
+            - Hardness (Max value found)
+            - Carbon Equivalent (CE)
+            - Heat Treatment (Normalized/As-Rolled)
+            - Material Group (P-Number)
+            Return ONLY a table-friendly format.
+            """
+            
+            # Call AI
+            response = model.generate_content([prompt, {"mime_type": mime_type, "data": file_data}])
+            
+            # Display Real AI Results
+            st.subheader("📝 AI Extraction Results")
+            st.markdown(response.text)
+            
+            st.success("Analysis Complete based on your specific criteria!")
+
+        except Exception as e:
+            st.error(f"Error reading file: {e}")
+
+# If no file is uploaded, show the empty table as a placeholder
+else:
+    st.info("Please upload a file to start the automated review.")
