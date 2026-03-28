@@ -81,6 +81,20 @@ STANDARDS = {
         "impact": None,
         "nace": "MR0175/ISO 15156 applicable for sour service",
     },
+  "API 5L Gr.B — Line Pipe": {
+    "key": "API5L_GRB",
+    "chemical": {
+        "C":  {"max": 0.28}, "Mn": {"max": 1.20},
+        "P":  {"max": 0.030}, "S": {"max": 0.030},
+    },
+    "mechanical": {
+        "UTS (MPa)": {"min": 414, "max": 758},
+        "YS (MPa)":  {"min": 241, "max": 496},
+        "Elongation (%)": {"min": 21},
+    },
+    "impact": None,
+    "nace": "NACE MR0175 for sour service; HIC per TM0284",
+},
     "Q355D — Structural Plate (GB/T 1591)": {
         "key": "Q355D",
         "chemical": {
