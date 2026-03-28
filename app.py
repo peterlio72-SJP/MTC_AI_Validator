@@ -25,21 +25,23 @@ if uploaded_file and api_key:
             file_data = base64.b64encode(uploaded_file.read()).decode('utf-8')
             m_type = "application/pdf" if uploaded_file.name.lower().endswith('.pdf') else "image/jpeg"
             
-           # Force the most universal stable model name
-url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
+            # --- THE URL: Stable V1 Path ---
+            url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
+            
+            # --- THE PAYLOAD: Using camelCase (inlineData) for the stable API ---
             payload = {
-    "contents": [{
-        "parts": [
-            {"text": f"Extract Heat Number, Grade, and Hardness for {target_material}."},
-            {
-                "inlineData": {
-                    "mimeType": m_type,
-                    "data": file_data
-                }
+                "contents": [{
+                    "parts": [
+                        {"text": f"Extract Heat Number, Grade, and Hardness for {target_material} from this MTC."},
+                        {
+                            "inlineData": {
+                                "mimeType": m_type,
+                                "data": file_data
+                            }
+                        }
+                    ]
+                }]
             }
-        ]
-    }]
-}
             
             # Send the request
             response = requests.post(url, json=payload)
@@ -47,10 +49,9 @@ url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:gen
             
             if "candidates" in res_json:
                 output_text = res_json['candidates'][0]['content']['parts'][0]['text']
-                st.subheader("📝 Results")
+                st.subheader("📝 Extraction Results")
                 st.markdown(output_text)
             else:
-                # If it still fails, this shows us the exact server feedback
                 st.error(f"API Error Detail: {res_json}")
                 
         except Exception as e:
