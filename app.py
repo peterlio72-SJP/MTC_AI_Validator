@@ -1,444 +1,494 @@
 """
-Material Certificate Reviewer - Backend API
-Flask application that uses Claude AI to review material certificates
-against industry standards (ASME, ASTM, EN, NACE, etc.)
-
-Requirements:
-    pip install flask flask-cors anthropic pypdf2 pillow python-dotenv
-
-Setup:
-    1. Create a .env file with your ANTHROPIC_API_KEY
-    2. Run: python app.py
-    3. API will be available at http://localhost:5000
+MatCert — Material Certificate Reviewer (Streamlit Version)
+============================================================
+Deploy on Streamlit Community Cloud (streamlit.io):
+  1. Push this file + requirements.txt to a GitHub repo
+  2. Go to share.streamlit.io → New App → connect repo
+  3. In App Settings → Secrets, add:
+       ANTHROPIC_API_KEY = "sk-ant-your-key-here"
+  4. Deploy!
+ 
+Local run:
+  pip install -r requirements.txt
+  streamlit run app.py
 """
-
-import os
+ 
+import streamlit as st
+import anthropic
 import base64
 import json
-from pathlib import Path
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import anthropic
-from dotenv import load_dotenv
-
-load_dotenv()
-
-app = Flask(__name__)
-CORS(app)
-
-# ─── Anthropic Client ────────────────────────────────────────────────────────
-client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-
-# ─── Standards Database ──────────────────────────────────────────────────────
+ 
+# ── Page config ───────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="MatCert — Certificate Reviewer",
+    page_icon="🔬",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+ 
+# ── Custom CSS ────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Syne:wght@700;800&display=swap');
+ 
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+h1, h2, h3 { font-family: 'Syne', sans-serif !important; }
+ 
+.verdict-pass  { background:#0d2e1f; border:1px solid #00c77a; border-radius:10px; padding:1rem 1.25rem; }
+.verdict-fail  { background:#2e0d12; border:1px solid #ff4455; border-radius:10px; padding:1rem 1.25rem; }
+.verdict-cond  { background:#2e200d; border:1px solid #ffb020; border-radius:10px; padding:1rem 1.25rem; }
+ 
+.pill-pass    { background:#0d2e1f; color:#00c77a; border-radius:100px; padding:2px 10px; font-size:.75rem; font-weight:600; }
+.pill-fail    { background:#2e0d12; color:#ff4455; border-radius:100px; padding:2px 10px; font-size:.75rem; font-weight:600; }
+.pill-missing { background:#2e200d; color:#ffb020; border-radius:100px; padding:2px 10px; font-size:.75rem; font-weight:600; }
+.pill-na      { background:#1a1c22; color:#6b7280; border-radius:100px; padding:2px 10px; font-size:.75rem; font-weight:600; }
+ 
+.mono { font-family: 'IBM Plex Mono', monospace !important; }
+.section-title { font-family:'Syne',sans-serif; font-size:1rem; font-weight:700; margin-bottom:.5rem; }
+.info-label { font-size:.7rem; text-transform:uppercase; letter-spacing:.08em; color:#6b7280; }
+.info-value { font-family:'IBM Plex Mono',monospace; font-size:.85rem; }
+</style>
+""", unsafe_allow_html=True)
+ 
+# ── Standards Database ────────────────────────────────────────────────────────
 STANDARDS = {
-    "ASME_A106_GR_B": {
-        "name": "ASME A106 Grade B Seamless Pipe",
+    "ASME A106 Gr.B — Seamless Pipe": {
+        "key": "ASME_A106_GR_B",
         "chemical": {
-            "C":  {"min": None, "max": 0.30, "unit": "%"},
-            "Mn": {"min": 0.29, "max": 1.06, "unit": "%"},
-            "P":  {"min": None, "max": 0.035, "unit": "%"},
-            "S":  {"min": None, "max": 0.035, "unit": "%"},
-            "Si": {"min": 0.10, "max": None,  "unit": "%"},
-            "Cu": {"min": None, "max": 0.40, "unit": "%"},
-            "Ni": {"min": None, "max": 0.40, "unit": "%"},
-            "Cr": {"min": None, "max": 0.40, "unit": "%"},
-            "Mo": {"min": None, "max": 0.15, "unit": "%"},
-            "V":  {"min": None, "max": 0.08, "unit": "%"},
+            "C":  {"max": 0.30}, "Mn": {"min": 0.29, "max": 1.06},
+            "P":  {"max": 0.035}, "S":  {"max": 0.035},
+            "Si": {"min": 0.10}, "Cu": {"max": 0.40},
+            "Ni": {"max": 0.40}, "Cr": {"max": 0.40},
+            "Mo": {"max": 0.15}, "V":  {"max": 0.08},
         },
         "mechanical": {
-            "UTS":   {"min": 415, "max": None, "unit": "MPa"},
-            "YS":    {"min": 240, "max": None, "unit": "MPa"},
-            "Elongation": {"min": 30, "max": None, "unit": "%"},
+            "UTS (MPa)": {"min": 415}, "YS (MPa)":  {"min": 240},
+            "Elongation (%)": {"min": 30},
         },
+        "impact": None,
         "nace": "MR0175/ISO 15156 – HIC & SSC resistance required for sour service",
     },
-    "ASME_A106_GR_C": {
-        "name": "ASME A106 Grade C Seamless Pipe",
+    "ASME A106 Gr.C — Seamless Pipe": {
+        "key": "ASME_A106_GR_C",
         "chemical": {
-            "C":  {"min": None, "max": 0.35, "unit": "%"},
-            "Mn": {"min": 0.29, "max": 1.06, "unit": "%"},
-            "P":  {"min": None, "max": 0.035, "unit": "%"},
-            "S":  {"min": None, "max": 0.035, "unit": "%"},
-            "Si": {"min": 0.10, "max": None,  "unit": "%"},
+            "C":  {"max": 0.35}, "Mn": {"min": 0.29, "max": 1.06},
+            "P":  {"max": 0.035}, "S":  {"max": 0.035}, "Si": {"min": 0.10},
         },
         "mechanical": {
-            "UTS": {"min": 485, "max": None, "unit": "MPa"},
-            "YS":  {"min": 275, "max": None, "unit": "MPa"},
-            "Elongation": {"min": 30, "max": None, "unit": "%"},
+            "UTS (MPa)": {"min": 485}, "YS (MPa)": {"min": 275},
+            "Elongation (%)": {"min": 30},
         },
-        "nace": "MR0175/ISO 15156 applicable for sour service environments",
+        "impact": None,
+        "nace": "MR0175/ISO 15156 applicable for sour service",
     },
-    "Q355D": {
-        "name": "Q355D Structural Steel Plate (GB/T 1591)",
+    "Q355D — Structural Plate (GB/T 1591)": {
+        "key": "Q355D",
         "chemical": {
-            "C":  {"min": None, "max": 0.20, "unit": "%"},
-            "Mn": {"min": None, "max": 1.70, "unit": "%"},
-            "Si": {"min": None, "max": 0.50, "unit": "%"},
-            "P":  {"min": None, "max": 0.025, "unit": "%"},
-            "S":  {"min": None, "max": 0.020, "unit": "%"},
-            "Nb": {"min": None, "max": 0.07, "unit": "%"},
-            "V":  {"min": None, "max": 0.20, "unit": "%"},
-            "Ti": {"min": None, "max": 0.20, "unit": "%"},
-            "Ceq":{"min": None, "max": 0.45, "unit": "%"},
+            "C":  {"max": 0.20}, "Mn": {"max": 1.70}, "Si": {"max": 0.50},
+            "P":  {"max": 0.025}, "S":  {"max": 0.020},
+            "Nb": {"max": 0.07}, "V":  {"max": 0.20},
+            "Ti": {"max": 0.20}, "Ceq":{"max": 0.45},
         },
         "mechanical": {
-            "YS":  {"min": 355, "max": None, "unit": "MPa"},
-            "UTS": {"min": 470, "max": 630,  "unit": "MPa"},
-            "Elongation": {"min": 22, "max": None, "unit": "%"},
+            "YS (MPa)": {"min": 355}, "UTS (MPa)": {"min": 470, "max": 630},
+            "Elongation (%)": {"min": 22},
         },
-        "impact": {
-            "temperature": -20,
-            "energy_avg": {"min": 34, "unit": "J"},
-            "unit": "°C",
-        },
-        "nace": "Not typically NACE-classified; check project-specific requirements",
+        "impact": {"temperature": -20, "min_avg_J": 34},
+        "nace": "Not typically NACE-classified; verify project spec",
     },
-    "ASTM_A516_GR70": {
-        "name": "ASTM A516 Grade 70 Pressure Vessel Plate",
+    "ASTM A516 Gr.70 — Pressure Vessel Plate": {
+        "key": "ASTM_A516_GR70",
         "chemical": {
-            "C":  {"min": None, "max": 0.28, "unit": "%"},
-            "Mn": {"min": 0.85, "max": 1.20, "unit": "%"},
-            "P":  {"min": None, "max": 0.035, "unit": "%"},
-            "S":  {"min": None, "max": 0.035, "unit": "%"},
-            "Si": {"min": 0.15, "max": 0.40, "unit": "%"},
+            "C":  {"max": 0.28}, "Mn": {"min": 0.85, "max": 1.20},
+            "P":  {"max": 0.035}, "S": {"max": 0.035},
+            "Si": {"min": 0.15, "max": 0.40},
         },
         "mechanical": {
-            "UTS": {"min": 485, "max": 620, "unit": "MPa"},
-            "YS":  {"min": 260, "max": None, "unit": "MPa"},
-            "Elongation": {"min": 17, "max": None, "unit": "%"},
+            "UTS (MPa)": {"min": 485, "max": 620}, "YS (MPa)": {"min": 260},
+            "Elongation (%)": {"min": 17},
         },
-        "nace": "HIC testing per NACE TM0284 required for sour service; SSC per NACE TM0177",
+        "impact": None,
+        "nace": "HIC per NACE TM0284 & SSC per NACE TM0177 for sour service",
     },
-    "ASTM_A333_GR6": {
-        "name": "ASTM A333 Grade 6 Low-Temperature Pipe",
+    "ASTM A333 Gr.6 — Low-Temp Pipe": {
+        "key": "ASTM_A333_GR6",
         "chemical": {
-            "C":  {"min": None, "max": 0.30, "unit": "%"},
-            "Mn": {"min": 0.29, "max": 1.06, "unit": "%"},
-            "P":  {"min": None, "max": 0.025, "unit": "%"},
-            "S":  {"min": None, "max": 0.025, "unit": "%"},
-            "Si": {"min": None, "max": None, "unit": "%"},
+            "C":  {"max": 0.30}, "Mn": {"min": 0.29, "max": 1.06},
+            "P":  {"max": 0.025}, "S":  {"max": 0.025},
         },
         "mechanical": {
-            "UTS": {"min": 415, "max": None, "unit": "MPa"},
-            "YS":  {"min": 240, "max": None, "unit": "MPa"},
-            "Elongation": {"min": 30, "max": None, "unit": "%"},
+            "UTS (MPa)": {"min": 415}, "YS (MPa)": {"min": 240},
+            "Elongation (%)": {"min": 30},
         },
-        "impact": {
-            "temperature": -45,
-            "energy_avg": {"min": 20, "unit": "J"},
-            "unit": "°C",
-        },
-        "nace": "Suitable for low-temperature applications; NACE per project specification",
+        "impact": {"temperature": -45, "min_avg_J": 20},
+        "nace": "Low-temp application; NACE per project specification",
     },
 }
-
-# ─── System Prompt ────────────────────────────────────────────────────────────
-SYSTEM_PROMPT = """You are an expert materials engineer and quality inspector specializing in:
-- Material Test Reports (MTR) / Mill Certificates
-- Industry standards: ASME, ASTM, EN, GB/T, API, ISO
-- NACE corrosion standards (MR0175, TM0177, TM0284)
-- Chemical composition analysis
-- Mechanical property verification (UTS, YS, elongation, hardness)
-- Impact test (Charpy/CVN) evaluation
-- Weld procedure and heat treatment review
-
-When reviewing a certificate, you MUST:
-1. Extract ALL chemical composition values found in the document
-2. Extract ALL mechanical test results (UTS, YS, elongation, reduction of area, hardness)
-3. Extract impact test results if present (temperature, energy values, avg)
+ 
+# ── System Prompt ─────────────────────────────────────────────────────────────
+SYSTEM_PROMPT = """You are an expert materials engineer specializing in reviewing Material Test Reports (MTR) / Mill Certificates against international standards (ASME, ASTM, EN, GB/T, API, ISO, NACE).
+ 
+When reviewing a certificate:
+1. Extract ALL chemical composition values found
+2. Extract ALL mechanical test results (UTS, YS, elongation, hardness, reduction of area)
+3. Extract impact test results if present (temperature, individual and average energy)
 4. Compare each value against the provided standard limits
-5. Flag any value that is out of specification with "FAIL"
-6. Flag any missing required value as "MISSING"
-7. Confirm passing values with "PASS"
-8. Note NACE compliance status
-9. Provide an overall PASS/FAIL verdict with clear reasoning
-
-Always respond in valid JSON format matching this schema:
+5. Flag FAIL for any out-of-spec value, MISSING for required but absent values, PASS for conforming values
+6. Note NACE compliance (hardness HRC ≤22, HIC, SSC test results)
+7. Give an overall PASS / FAIL / CONDITIONAL verdict
+ 
+Respond ONLY in valid JSON matching this exact schema (no markdown fences, no preamble):
 {
   "document_info": {
-    "heat_number": "...",
-    "lot_number": "...",
-    "material_grade": "...",
-    "manufacturer": "...",
-    "po_number": "...",
-    "test_date": "..."
+    "heat_number": "string or null",
+    "lot_number": "string or null",
+    "material_grade": "string or null",
+    "manufacturer": "string or null",
+    "po_number": "string or null",
+    "test_date": "string or null"
   },
   "chemical_composition": {
-    "Element": {"found": value_or_null, "min": value_or_null, "max": value_or_null, "unit": "%", "status": "PASS|FAIL|MISSING"}
+    "ELEMENT": {"found": number_or_null, "min": number_or_null, "max": number_or_null, "unit": "%", "status": "PASS|FAIL|MISSING"}
   },
   "mechanical_properties": {
-    "Property": {"found": value_or_null, "min": value_or_null, "max": value_or_null, "unit": "...", "status": "PASS|FAIL|MISSING"}
+    "PROPERTY": {"found": number_or_null, "min": number_or_null, "max": number_or_null, "unit": "string", "status": "PASS|FAIL|MISSING"}
   },
   "impact_tests": {
-    "temperature": value_or_null,
-    "specimens": [{"id": "...", "energy": value, "unit": "J"}],
-    "average": value_or_null,
-    "required_avg": value_or_null,
+    "temperature": number_or_null,
+    "unit": "°C",
+    "specimens": [{"id": "string", "energy": number, "unit": "J"}],
+    "average": number_or_null,
+    "required_avg": number_or_null,
     "status": "PASS|FAIL|MISSING|N/A"
   },
   "nace_compliance": {
-    "applicable": true/false,
-    "standard": "...",
-    "hardness_hrc": value_or_null,
+    "applicable": true_or_false,
+    "standard": "string",
+    "hardness_hrc": number_or_null,
     "hardness_limit": 22,
-    "hic_tested": true/false,
-    "ssc_tested": true/false,
+    "hic_tested": true_or_false,
+    "ssc_tested": true_or_false,
     "status": "PASS|FAIL|NOT_TESTED|N/A",
-    "notes": "..."
+    "notes": "string"
   },
   "overall_verdict": "PASS|FAIL|CONDITIONAL",
-  "failed_items": ["list of specific failures"],
-  "missing_items": ["list of missing required items"],
-  "warnings": ["non-critical observations"],
-  "summary": "Brief human-readable summary paragraph"
+  "failed_items": ["string"],
+  "missing_items": ["string"],
+  "warnings": ["string"],
+  "summary": "string"
 }"""
-
-
-# ─── Helper: Encode file to base64 ───────────────────────────────────────────
-def encode_file(file_bytes: bytes, media_type: str) -> str:
+ 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def encode_file(file_bytes: bytes) -> str:
     return base64.standard_b64encode(file_bytes).decode("utf-8")
-
-
-# ─── Route: Health check ──────────────────────────────────────────────────────
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({"status": "ok", "service": "Material Certificate Reviewer"})
-
-
-# ─── Route: List available standards ─────────────────────────────────────────
-@app.route("/standards", methods=["GET"])
-def list_standards():
-    return jsonify({
-        key: {"name": val["name"], "nace": val.get("nace", "N/A")}
-        for key, val in STANDARDS.items()
-    })
-
-
-# ─── Route: Review certificate ────────────────────────────────────────────────
-@app.route("/review", methods=["POST"])
-def review_certificate():
-    """
-    POST /review
-    Form data:
-      - file: PDF or image file (required)
-      - standard: standard key from STANDARDS dict (required)
-      - nace_required: "true"/"false" (optional, default false)
-      - notes: additional reviewer notes (optional)
-    """
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
-
-    file = request.files["file"]
-    standard_key = request.form.get("standard", "ASME_A106_GR_B").upper().replace("-", "_")
-    nace_required = request.form.get("nace_required", "false").lower() == "true"
-    reviewer_notes = request.form.get("notes", "")
-
-    if standard_key not in STANDARDS:
-        return jsonify({
-            "error": f"Unknown standard: {standard_key}",
-            "available": list(STANDARDS.keys())
-        }), 400
-
-    standard = STANDARDS[standard_key]
-    file_bytes = file.read()
-    filename = file.filename.lower()
-
-    # Determine media type
-    if filename.endswith(".pdf"):
-        media_type = "application/pdf"
-        doc_type = "document"
-    elif filename.endswith((".jpg", ".jpeg")):
-        media_type = "image/jpeg"
-        doc_type = "image"
-    elif filename.endswith(".png"):
-        media_type = "image/png"
-        doc_type = "image"
-    elif filename.endswith(".webp"):
-        media_type = "image/webp"
-        doc_type = "image"
-    else:
-        return jsonify({"error": "Unsupported file type. Use PDF, JPG, PNG, or WEBP"}), 400
-
-    b64_data = encode_file(file_bytes, media_type)
-
-    # Build the content blocks for Claude
-    standard_context = f"""
-STANDARD UNDER REVIEW: {standard['name']} ({standard_key})
-
-CHEMICAL COMPOSITION LIMITS:
-{json.dumps(standard.get('chemical', {}), indent=2)}
-
-MECHANICAL PROPERTY LIMITS:
-{json.dumps(standard.get('mechanical', {}), indent=2)}
-
-IMPACT TEST REQUIREMENTS:
-{json.dumps(standard.get('impact', {'note': 'Not required by this standard'}), indent=2)}
-
-NACE REQUIREMENTS:
-{standard.get('nace', 'Not specified')}
-NACE Required by Project: {nace_required}
-
-REVIEWER NOTES: {reviewer_notes if reviewer_notes else 'None'}
-
-Please review the attached material certificate against ALL the above requirements and respond in the JSON schema specified.
+ 
+def get_client():
+    try:
+        key = st.secrets["ANTHROPIC_API_KEY"]
+    except Exception:
+        key = None
+    if not key:
+        st.error("❌ **ANTHROPIC_API_KEY not found.** Add it in Streamlit → Settings → Secrets, or create a `.streamlit/secrets.toml` file locally.")
+        st.stop()
+    return anthropic.Anthropic(api_key=key)
+ 
+def status_badge(status: str) -> str:
+    mapping = {
+        "PASS":      '<span class="pill-pass">✓ PASS</span>',
+        "FAIL":      '<span class="pill-fail">✕ FAIL</span>',
+        "MISSING":   '<span class="pill-missing">? MISSING</span>',
+        "N/A":       '<span class="pill-na">– N/A</span>',
+        "NOT_TESTED":'<span class="pill-na">– NOT TESTED</span>',
+    }
+    return mapping.get(status, f'<span class="pill-na">{status}</span>')
+ 
+def call_claude(file_bytes: bytes, media_type: str, standard_name: str,
+                standard: dict, nace_required: bool, notes: str) -> dict:
+    client = get_client()
+    b64 = encode_file(file_bytes)
+    doc_type = "document" if media_type == "application/pdf" else "image"
+ 
+    context = f"""
+STANDARD: {standard_name} ({standard['key']})
+CHEMICAL COMPOSITION LIMITS: {json.dumps(standard['chemical'], indent=2)}
+MECHANICAL PROPERTY LIMITS:  {json.dumps(standard['mechanical'], indent=2)}
+IMPACT TEST REQUIREMENTS:    {json.dumps(standard.get('impact') or {'note': 'Not required for this standard'}, indent=2)}
+NACE NOTE:                   {standard['nace']}
+PROJECT NACE REQUIRED:       {nace_required}
+ADDITIONAL REVIEWER NOTES:   {notes or 'None'}
+ 
+Review the attached certificate against ALL requirements above and respond in the required JSON schema.
 """
-
     if doc_type == "document":
         content = [
-            {
-                "type": "document",
-                "source": {
-                    "type": "base64",
-                    "media_type": media_type,
-                    "data": b64_data
-                }
-            },
-            {"type": "text", "text": standard_context}
+            {"type": "document", "source": {"type": "base64", "media_type": media_type, "data": b64}},
+            {"type": "text", "text": context},
         ]
     else:
         content = [
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": media_type,
-                    "data": b64_data
-                }
-            },
-            {"type": "text", "text": standard_context}
+            {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
+            {"type": "text", "text": context},
         ]
-
-    # Call Claude API
+ 
     response = client.messages.create(
         model="claude-opus-4-5",
         max_tokens=4096,
         system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": content}]
+        messages=[{"role": "user", "content": content}],
     )
-
-    raw_text = response.content[0].text
-
-    # Parse JSON response
-    try:
-        # Strip markdown fences if present
-        clean = raw_text.strip()
-        if clean.startswith("```"):
-            clean = clean.split("```")[1]
-            if clean.startswith("json"):
-                clean = clean[4:]
-        result = json.loads(clean)
-    except json.JSONDecodeError:
-        result = {"raw_response": raw_text, "parse_error": "Could not parse JSON"}
-
-    return jsonify({
-        "standard": standard_key,
-        "standard_name": standard["name"],
-        "filename": file.filename,
-        "review": result
-    })
-
-
-# ─── Route: Multi-file batch review ──────────────────────────────────────────
-@app.route("/batch-review", methods=["POST"])
-def batch_review():
-    """
-    POST /batch-review (JSON body)
-    {
-      "certificates": [
-        {"filename": "cert1.pdf", "data": "<base64>", "media_type": "application/pdf"},
-        ...
-      ],
-      "standard": "ASME_A106_GR_B",
-      "nace_required": false
-    }
-    """
-    body = request.get_json()
-    if not body or "certificates" not in body:
-        return jsonify({"error": "Request body must include 'certificates' array"}), 400
-
-    standard_key = body.get("standard", "ASME_A106_GR_B").upper()
-    nace_required = body.get("nace_required", False)
-
-    if standard_key not in STANDARDS:
-        return jsonify({"error": f"Unknown standard: {standard_key}"}), 400
-
-    standard = STANDARDS[standard_key]
-    results = []
-
-    for cert in body["certificates"]:
-        try:
-            media_type = cert["media_type"]
-            b64_data = cert["data"]
-            doc_type = "document" if media_type == "application/pdf" else "image"
-
-            standard_context = f"""
-STANDARD: {standard['name']} ({standard_key})
-CHEMICAL LIMITS: {json.dumps(standard.get('chemical', {}))}
-MECHANICAL LIMITS: {json.dumps(standard.get('mechanical', {}))}
-IMPACT REQUIREMENTS: {json.dumps(standard.get('impact', {'note': 'Not required'}))}
-NACE: {standard.get('nace', 'Not specified')} | Project NACE required: {nace_required}
-Review this certificate and respond in the required JSON schema.
-"""
-            if doc_type == "document":
-                content = [
-                    {"type": "document", "source": {"type": "base64", "media_type": media_type, "data": b64_data}},
-                    {"type": "text", "text": standard_context}
-                ]
-            else:
-                content = [
-                    {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64_data}},
-                    {"type": "text", "text": standard_context}
-                ]
-
-            response = client.messages.create(
-                model="claude-opus-4-5",
-                max_tokens=4096,
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": content}]
-            )
-
-            raw_text = response.content[0].text
-            clean = raw_text.strip()
-            if clean.startswith("```"):
-                clean = clean.split("```")[1]
-                if clean.startswith("json"):
-                    clean = clean[4:]
-            result = json.loads(clean)
-
-            results.append({
-                "filename": cert.get("filename", "unknown"),
-                "status": "success",
-                "review": result
-            })
-
-        except Exception as e:
-            results.append({
-                "filename": cert.get("filename", "unknown"),
-                "status": "error",
-                "error": str(e)
-            })
-
-    # Batch summary
-    total = len(results)
-    passed = sum(1 for r in results if r.get("review", {}).get("overall_verdict") == "PASS")
-    failed = sum(1 for r in results if r.get("review", {}).get("overall_verdict") == "FAIL")
-
-    return jsonify({
-        "batch_summary": {
-            "total": total,
-            "passed": passed,
-            "failed": failed,
-            "errors": total - passed - failed
-        },
-        "results": results
-    })
-
-
-if __name__ == "__main__":
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        print("⚠️  WARNING: ANTHROPIC_API_KEY not set. Create a .env file with your key.")
+ 
+    raw = response.content[0].text.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    return json.loads(raw)
+ 
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("## 🔬 MatCert")
+    st.markdown("*AI-powered material certificate reviewer*")
+    st.divider()
+ 
+    uploaded_file = st.file_uploader(
+        "Upload Certificate",
+        type=["pdf", "jpg", "jpeg", "png", "webp"],
+        help="Upload a PDF or image of the material test report / mill certificate",
+    )
+ 
+    standard_name = st.selectbox("Material Standard", list(STANDARDS.keys()))
+    standard = STANDARDS[standard_name]
+ 
+    nace_required = st.toggle("NACE / Sour Service Required", value=False,
+                              help="Enable if project specification requires NACE MR0175 or sour service compliance")
+ 
+    notes = st.text_area("Additional Notes (optional)",
+                         placeholder="e.g. HIC test required, wall thickness 25mm, heat treatment condition…",
+                         height=90)
+ 
+    st.divider()
+    review_btn = st.button("🔍 Review Certificate", type="primary",
+                           disabled=(uploaded_file is None), use_container_width=True)
+ 
+    st.divider()
+    st.markdown("**Supported Standards**")
+    st.markdown("""
+- ASME A106 Gr.B / Gr.C
+- ASTM A516 Gr.70
+- ASTM A333 Gr.6
+- Q355D (GB/T 1591)
+- NACE MR0175 / TM0284 / TM0177
+""")
+ 
+# ── Main area ─────────────────────────────────────────────────────────────────
+st.markdown("# Material Certificate Reviewer")
+st.markdown("Upload a mill certificate, select the applicable standard, and let AI verify compliance automatically.")
+ 
+if not uploaded_file and not review_btn:
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.info("**Step 1** — Upload a PDF or image of your material certificate using the sidebar.")
+    with col2:
+        st.info("**Step 2** — Select the applicable material standard (ASME, ASTM, Q355D, etc.).")
+    with col3:
+        st.info("**Step 3** — Click **Review Certificate** to get an instant AI compliance verdict.")
+    st.stop()
+ 
+# ── Run review ────────────────────────────────────────────────────────────────
+if review_btn and uploaded_file:
+    file_bytes = uploaded_file.read()
+    fname = uploaded_file.name.lower()
+ 
+    if fname.endswith(".pdf"):
+        media_type = "application/pdf"
+    elif fname.endswith((".jpg", ".jpeg")):
+        media_type = "image/jpeg"
+    elif fname.endswith(".png"):
+        media_type = "image/png"
+    elif fname.endswith(".webp"):
+        media_type = "image/webp"
     else:
-        print(f"✅ Anthropic API key loaded ({api_key[:8]}...)")
-    print("🚀 Starting Material Certificate Reviewer API on http://localhost:5000")
-    app.run(debug=True, port=5000)
+        st.error("Unsupported file type. Please upload PDF, JPG, PNG, or WEBP.")
+        st.stop()
+ 
+    with st.spinner("Analyzing certificate… this may take 15–30 seconds."):
+        try:
+            result = call_claude(file_bytes, media_type, standard_name,
+                                 standard, nace_required, notes)
+            st.session_state["result"] = result
+            st.session_state["filename"] = uploaded_file.name
+            st.session_state["standard_name"] = standard_name
+        except json.JSONDecodeError as e:
+            st.error(f"Could not parse AI response as JSON: {e}")
+            st.stop()
+        except Exception as e:
+            st.error(f"Error calling Anthropic API: {e}")
+            st.stop()
+ 
+# ── Display results ───────────────────────────────────────────────────────────
+if "result" in st.session_state:
+    r = st.session_state["result"]
+    fname = st.session_state.get("filename", "")
+    sname = st.session_state.get("standard_name", "")
+ 
+    verdict = r.get("overall_verdict", "CONDITIONAL")
+    verdict_color = {"PASS": "verdict-pass", "FAIL": "verdict-fail"}.get(verdict, "verdict-cond")
+    verdict_icon  = {"PASS": "✅", "FAIL": "❌"}.get(verdict, "⚠️")
+    verdict_text  = {"PASS": "Certificate APPROVED", "FAIL": "Certificate REJECTED"}.get(verdict, "Conditional — Review Required")
+ 
+    st.markdown(f"""
+    <div class="{verdict_color}">
+      <span style="font-size:1.5rem">{verdict_icon}</span>
+      <strong style="font-family:'Syne',sans-serif;font-size:1.2rem;margin-left:.5rem">{verdict_text}</strong>
+      <span style="font-size:.8rem;color:#9ca3af;margin-left:.75rem">{sname} · {fname}</span>
+    </div>
+    """, unsafe_allow_html=True)
+ 
+    st.markdown("")
+ 
+    # ── Document info ──
+    di = r.get("document_info", {})
+    if any(di.values()):
+        cols = st.columns(6)
+        fields = [("Heat No.", "heat_number"), ("Lot No.", "lot_number"),
+                  ("Grade", "material_grade"), ("Manufacturer", "manufacturer"),
+                  ("PO No.", "po_number"), ("Test Date", "test_date")]
+        for col, (label, key) in zip(cols, fields):
+            with col:
+                st.markdown(f'<div class="info-label">{label}</div><div class="info-value">{di.get(key) or "—"}</div>', unsafe_allow_html=True)
+        st.divider()
+ 
+    # ── Tabs ──
+    failed_count  = len(r.get("failed_items", []))
+    missing_count = len(r.get("missing_items", []))
+    issues_label  = f"Issues ({failed_count + missing_count})" if failed_count + missing_count else "Issues"
+ 
+    tab_chem, tab_mech, tab_impact, tab_nace, tab_issues = st.tabs(
+        ["🧪 Chemistry", "⚙️ Mechanical", "❄️ Impact Test", "🛡️ NACE", issues_label]
+    )
+ 
+    # ── Chemistry tab ──
+    with tab_chem:
+        chem = r.get("chemical_composition", {})
+        if chem:
+            rows = []
+            for el, v in chem.items():
+                rows.append({
+                    "Element": el,
+                    "Found": v.get("found") if v.get("found") is not None else "—",
+                    "Min": v.get("min") if v.get("min") is not None else "—",
+                    "Max": v.get("max") if v.get("max") is not None else "—",
+                    "Unit": v.get("unit", "%"),
+                    "Status": v.get("status", "—"),
+                })
+            # Display with colored status
+            header_cols = st.columns([1.2, 1.2, 1.2, 1.2, 0.8, 1.5])
+            for col, h in zip(header_cols, ["Element", "Found", "Min", "Max", "Unit", "Status"]):
+                col.markdown(f"**{h}**")
+            for row in rows:
+                cols = st.columns([1.2, 1.2, 1.2, 1.2, 0.8, 1.5])
+                cols[0].markdown(f"`{row['Element']}`")
+                cols[1].write(row["Found"])
+                cols[2].write(row["Min"])
+                cols[3].write(row["Max"])
+                cols[4].write(row["Unit"])
+                cols[5].markdown(status_badge(row["Status"]), unsafe_allow_html=True)
+        else:
+            st.info("No chemical composition data found in the certificate.")
+ 
+    # ── Mechanical tab ──
+    with tab_mech:
+        mech = r.get("mechanical_properties", {})
+        if mech:
+            header_cols = st.columns([2, 1.2, 1.2, 1.2, 1.2, 1.5])
+            for col, h in zip(header_cols, ["Property", "Found", "Min", "Max", "Unit", "Status"]):
+                col.markdown(f"**{h}**")
+            for prop, v in mech.items():
+                cols = st.columns([2, 1.2, 1.2, 1.2, 1.2, 1.5])
+                cols[0].write(prop)
+                cols[1].write(v.get("found") if v.get("found") is not None else "—")
+                cols[2].write(v.get("min") if v.get("min") is not None else "—")
+                cols[3].write(v.get("max") if v.get("max") is not None else "—")
+                cols[4].write(v.get("unit", ""))
+                cols[5].markdown(status_badge(v.get("status", "—")), unsafe_allow_html=True)
+        else:
+            st.info("No mechanical property data found.")
+ 
+    # ── Impact tab ──
+    with tab_impact:
+        imp = r.get("impact_tests", {})
+        if imp and imp.get("status") != "N/A":
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Test Temperature", f"{imp.get('temperature', '—')} {imp.get('unit','°C')}")
+            col2.metric("Average Energy", f"{imp.get('average', '—')} J")
+            col3.metric("Required Average", f"{imp.get('required_avg', '—')} J")
+            col4.markdown("**Status**")
+            col4.markdown(status_badge(imp.get("status", "—")), unsafe_allow_html=True)
+ 
+            specimens = imp.get("specimens", [])
+            if specimens:
+                st.markdown("**Individual Specimens**")
+                spec_cols = st.columns(len(specimens))
+                for col, s in zip(spec_cols, specimens):
+                    col.metric(s.get("id", "Specimen"), f"{s.get('energy','—')} {s.get('unit','J')}")
+        else:
+            st.info("No impact test data found / not required for this standard.")
+ 
+    # ── NACE tab ──
+    with tab_nace:
+        nace = r.get("nace_compliance", {})
+        if nace:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**NACE Compliance Details**")
+                st.markdown(f"**Standard:** {nace.get('standard','—')}")
+                st.markdown(f"**Applicable:** {'Yes' if nace.get('applicable') else 'No'}")
+                hrc = nace.get("hardness_hrc")
+                lim = nace.get("hardness_limit", 22)
+                st.markdown(f"**Hardness HRC:** {hrc if hrc is not None else '—'} / max {lim}")
+                st.markdown(f"**HIC Tested:** {'✅ Yes' if nace.get('hic_tested') else '❌ No'}")
+                st.markdown(f"**SSC Tested:** {'✅ Yes' if nace.get('ssc_tested') else '❌ No'}")
+                st.markdown("**Overall Status:**")
+                st.markdown(status_badge(nace.get("status", "—")), unsafe_allow_html=True)
+            with col2:
+                st.markdown("**Notes**")
+                st.info(nace.get("notes") or standard["nace"])
+        else:
+            st.info("No NACE compliance data available.")
+ 
+    # ── Issues tab ──
+    with tab_issues:
+        failed_items  = r.get("failed_items", [])
+        missing_items = r.get("missing_items", [])
+        warnings      = r.get("warnings", [])
+ 
+        if not failed_items and not missing_items and not warnings:
+            st.success("✅ No issues found — all values are within specification.")
+        else:
+            if failed_items:
+                st.markdown("#### ❌ Failed Items")
+                for item in failed_items:
+                    st.error(item)
+            if missing_items:
+                st.markdown("#### ⚠️ Missing Items")
+                for item in missing_items:
+                    st.warning(item)
+            if warnings:
+                st.markdown("#### ℹ️ Warnings")
+                for w in warnings:
+                    st.info(w)
+ 
+    # ── Summary ──
+    if r.get("summary"):
+        st.divider()
+        st.markdown("**Review Summary**")
+        st.markdown(r["summary"])
+ 
+    # ── Download JSON ──
+    st.divider()
+    st.download_button(
+        "⬇️ Download Full Review (JSON)",
+        data=json.dumps(r, indent=2),
+        file_name=f"review_{fname.replace(' ','_')}.json",
+        mime="application/json",
+    )
