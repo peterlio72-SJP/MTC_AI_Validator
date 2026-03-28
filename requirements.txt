@@ -1,3 +1,7 @@
-streamlit
-pandas
-requests
+flask==3.0.3
+flask-cors==4.0.1
+anthropic==0.34.2
+pypdf2==3.0.1
+pillow==10.4.0
+python-dotenv==1.0.1
+requests==2.32.3
