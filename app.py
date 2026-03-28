@@ -25,8 +25,8 @@ if uploaded_file and api_key:
             file_data = base64.b64encode(uploaded_file.read()).decode('utf-8')
             m_type = "application/pdf" if uploaded_file.name.lower().endswith('.pdf') else "image/jpeg"
             
-            # --- THE URL: Stable V1 Path with the -002 Production Model ---
-            url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-pro-002:generateContent?key={api_key}"
+           # --- THE UNIVERSAL STABLE URL ---
+url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash-latest:generateContent?key={api_key}"
             
             # --- THE PAYLOAD ---
             payload = {
