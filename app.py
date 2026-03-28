@@ -1,557 +1,724 @@
 """
-MatCert — Material Certificate Reviewer (Streamlit Version)
-============================================================
-Deploy on Streamlit Community Cloud (streamlit.io):
-  1. Push this file + requirements.txt to a GitHub repo
-  2. Go to share.streamlit.io → New App → connect repo
-  3. In App Settings → Secrets, add:
-       ANTHROPIC_API_KEY = "sk-ant-your-key-here"
-  4. Deploy!
- 
-Local run:
-  pip install -r requirements.txt
-  streamlit run app.py
+MatCert — Material Certificate Reviewer
+========================================
+Workflow:
+  1. Upload any mill certificate (PDF or image)
+  2. AI identifies the material grade/standard automatically
+  3. Searches your Standards Library for a matching document
+  4. If found  → reviews against your uploaded standard PDF (highest accuracy)
+  5. If not found → falls back to AI built-in knowledge (still works)
+  6. Always shows which source was used and confidence level
+
+Deploy on Streamlit Community Cloud:
+  Secrets: ANTHROPIC_API_KEY = "sk-ant-..."
 """
- 
+
 import streamlit as st
 import anthropic
 import base64
 import json
- 
+from datetime import datetime
+
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="MatCert — Certificate Reviewer",
     page_icon="🔬",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
- 
-# ── Custom CSS ────────────────────────────────────────────────────────────────
+
+# ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Syne:wght@700;800&display=swap');
- 
 html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 h1, h2, h3 { font-family: 'Syne', sans-serif !important; }
- 
-.verdict-pass  { background:#0d2e1f; border:1px solid #00c77a; border-radius:10px; padding:1rem 1.25rem; }
-.verdict-fail  { background:#2e0d12; border:1px solid #ff4455; border-radius:10px; padding:1rem 1.25rem; }
-.verdict-cond  { background:#2e200d; border:1px solid #ffb020; border-radius:10px; padding:1rem 1.25rem; }
- 
+
+.verdict-pass { background:#0d2e1f; border:1px solid #00c77a; border-radius:10px; padding:1rem 1.25rem; margin-bottom:1rem; }
+.verdict-fail { background:#2e0d12; border:1px solid #ff4455; border-radius:10px; padding:1rem 1.25rem; margin-bottom:1rem; }
+.verdict-cond { background:#2e200d; border:1px solid #ffb020; border-radius:10px; padding:1rem 1.25rem; margin-bottom:1rem; }
+
+.source-library { background:#0d2e1f; border:1px solid #00c77a; border-radius:8px; padding:.65rem 1rem; margin-bottom:.75rem; font-size:.82rem; }
+.source-ai      { background:#1a1a0d; border:1px solid #ffb020; border-radius:8px; padding:.65rem 1rem; margin-bottom:.75rem; font-size:.82rem; }
+.source-unknown { background:#2e0d12; border:1px solid #ff4455; border-radius:8px; padding:.65rem 1rem; margin-bottom:.75rem; font-size:.82rem; }
+
+.detect-box { background:#0d1a2e; border:1px solid #0099ff; border-radius:10px; padding:.85rem 1.1rem; margin-bottom:1rem; }
+.detect-label { font-size:.7rem; text-transform:uppercase; letter-spacing:.08em; color:#6b7280; margin-bottom:.15rem; }
+.detect-value { font-family:'IBM Plex Mono',monospace; font-size:.9rem; color:#60c0ff; font-weight:600; }
+
 .pill-pass    { background:#0d2e1f; color:#00c77a; border-radius:100px; padding:2px 10px; font-size:.75rem; font-weight:600; }
 .pill-fail    { background:#2e0d12; color:#ff4455; border-radius:100px; padding:2px 10px; font-size:.75rem; font-weight:600; }
 .pill-missing { background:#2e200d; color:#ffb020; border-radius:100px; padding:2px 10px; font-size:.75rem; font-weight:600; }
 .pill-na      { background:#1a1c22; color:#6b7280; border-radius:100px; padding:2px 10px; font-size:.75rem; font-weight:600; }
- 
-.mono { font-family: 'IBM Plex Mono', monospace !important; }
-.section-title { font-family:'Syne',sans-serif; font-size:1rem; font-weight:700; margin-bottom:.5rem; }
+
+.conf-HIGH   { color:#00c77a; font-weight:700; }
+.conf-MEDIUM { color:#ffb020; font-weight:700; }
+.conf-LOW    { color:#ff4455; font-weight:700; }
+
+.lib-card { background:#111318; border:1px solid #252830; border-radius:10px; padding:.85rem 1.1rem; margin-bottom:.5rem; }
+.lib-card-name { font-family:'IBM Plex Mono',monospace; font-size:.82rem; font-weight:600; }
+.lib-card-meta { font-size:.7rem; color:#6b7280; margin-top:.2rem; }
+
 .info-label { font-size:.7rem; text-transform:uppercase; letter-spacing:.08em; color:#6b7280; }
-.info-value { font-family:'IBM Plex Mono',monospace; font-size:.85rem; }
+.info-value { font-family:'IBM Plex Mono',monospace; font-size:.82rem; }
+
+.step { background:#111318; border:1px solid #252830; border-radius:8px; padding:.6rem .9rem; margin-bottom:.4rem; font-size:.82rem; }
+.step-num { font-family:'IBM Plex Mono',monospace; color:#0099ff; font-weight:700; margin-right:.5rem; }
 </style>
 """, unsafe_allow_html=True)
- 
-# ── Standards Database ────────────────────────────────────────────────────────
-STANDARDS = {
-    "ASME A106 Gr.B — Seamless Pipe": {
-        "key": "ASME_A106_GR_B",
-        "chemical": {
-            "C":  {"max": 0.30}, "Mn": {"min": 0.29, "max": 1.06},
-            "P":  {"max": 0.035}, "S":  {"max": 0.035},
-            "Si": {"min": 0.10}, "Cu": {"max": 0.40},
-            "Ni": {"max": 0.40}, "Cr": {"max": 0.40},
-            "Mo": {"max": 0.15}, "V":  {"max": 0.08},
-        },
-        "mechanical": {
-            "UTS (MPa)": {"min": 415}, "YS (MPa)":  {"min": 240},
-            "Elongation (%)": {"min": 30},
-        },
-        "impact": None,
-        "nace": "MR0175/ISO 15156 – HIC & SSC resistance required for sour service",
-    },
-    "ASME A106 Gr.C — Seamless Pipe": {
-        "key": "ASME_A106_GR_C",
-        "chemical": {
-            "C":  {"max": 0.35}, "Mn": {"min": 0.29, "max": 1.06},
-            "P":  {"max": 0.035}, "S":  {"max": 0.035}, "Si": {"min": 0.10},
-        },
-        "mechanical": {
-            "UTS (MPa)": {"min": 485}, "YS (MPa)": {"min": 275},
-            "Elongation (%)": {"min": 30},
-        },
-        "impact": None,
-        "nace": "MR0175/ISO 15156 applicable for sour service",
-    },
-  "ASTM A105 — Carbon Steel Forgings": {
-    "key": "ASTM_A105",
-    "chemical": {
-        "C":  {"max": 0.35}, "Mn": {"min": 0.60, "max": 1.05},
-        "P":  {"max": 0.035}, "S": {"max": 0.040},
-        "Si": {"min": 0.10, "max": 0.35},
-        "Cu": {"max": 0.40}, "Ni": {"max": 0.40},
-        "Cr": {"max": 0.30}, "Mo": {"max": 0.12},
-        "V":  {"max": 0.08},
-    },
-    "mechanical": {
-        "UTS (MPa)": {"min": 485},
-        "YS (MPa)":  {"min": 250},
-        "Elongation (%)": {"min": 22},
-        "Reduction of Area (%)": {"min": 30},
-    },
-    "impact": None,
-    "nace": "NACE MR0175 HRC ≤22 for sour service forgings",
-},
-  "ASTM A694 F65 — High Yield Forgings": {
-    "key": "ASTM_A694_F65",
-    "chemical": {
-        "C":  {"max": 0.35}, "Mn": {"max": 1.60},
-        "P":  {"max": 0.035}, "S": {"max": 0.040},
-    },
-    "mechanical": {
-        "UTS (MPa)": {"min": 530},
-        "YS (MPa)":  {"min": 448},
-        "Elongation (%)": {"min": 18},
-        "Reduction of Area (%)": {"min": 30},
-    },
-    "impact": {"temperature": -46, "min_avg_J": 27},
-    "nace": "NACE MR0175 applicable for high-pressure sour service",
-},
-  "EN 10216-2 P265GH — Boiler Tube": {
-    "key": "EN10216_P265GH",
-    "chemical": {
-        "C":  {"max": 0.20}, "Mn": {"min": 0.80, "max": 1.40},
-        "P":  {"max": 0.025}, "S": {"max": 0.020},
-        "Si": {"max": 0.40},
-    },
-    "mechanical": {
-        "UTS (MPa)": {"min": 410, "max": 530},
-        "YS (MPa)":  {"min": 265},
-        "Elongation (%)": {"min": 23},
-    },
-    "impact": {"temperature": -20, "min_avg_J": 27},
-    "nace": "Not typically NACE-classified; verify project spec",
-},
-  "API 5L Gr.B — Line Pipe": {
-    "key": "API5L_GRB",
-    "chemical": {
-        "C":  {"max": 0.28}, "Mn": {"max": 1.20},
-        "P":  {"max": 0.030}, "S": {"max": 0.030},
-    },
-    "mechanical": {
-        "UTS (MPa)": {"min": 414, "max": 758},
-        "YS (MPa)":  {"min": 241, "max": 496},
-        "Elongation (%)": {"min": 21},
-    },
-    "impact": None,
-    "nace": "NACE MR0175 for sour service; HIC per TM0284",
-},
-    "Q355D — Structural Plate (GB/T 1591)": {
-        "key": "Q355D",
-        "chemical": {
-            "C":  {"max": 0.20}, "Mn": {"max": 1.70}, "Si": {"max": 0.50},
-            "P":  {"max": 0.025}, "S":  {"max": 0.020},
-            "Nb": {"max": 0.07}, "V":  {"max": 0.20},
-            "Ti": {"max": 0.20}, "Ceq":{"max": 0.45},
-        },
-        "mechanical": {
-            "YS (MPa)": {"min": 355}, "UTS (MPa)": {"min": 470, "max": 630},
-            "Elongation (%)": {"min": 22},
-        },
-        "impact": {"temperature": -20, "min_avg_J": 34},
-        "nace": "Not typically NACE-classified; verify project spec",
-    },
-    "ASTM A516 Gr.70 — Pressure Vessel Plate": {
-        "key": "ASTM_A516_GR70",
-        "chemical": {
-            "C":  {"max": 0.28}, "Mn": {"min": 0.85, "max": 1.20},
-            "P":  {"max": 0.035}, "S": {"max": 0.035},
-            "Si": {"min": 0.15, "max": 0.40},
-        },
-        "mechanical": {
-            "UTS (MPa)": {"min": 485, "max": 620}, "YS (MPa)": {"min": 260},
-            "Elongation (%)": {"min": 17},
-        },
-        "impact": None,
-        "nace": "HIC per NACE TM0284 & SSC per NACE TM0177 for sour service",
-    },
-    "ASTM A333 Gr.6 — Low-Temp Pipe": {
-        "key": "ASTM_A333_GR6",
-        "chemical": {
-            "C":  {"max": 0.30}, "Mn": {"min": 0.29, "max": 1.06},
-            "P":  {"max": 0.025}, "S":  {"max": 0.025},
-        },
-        "mechanical": {
-            "UTS (MPa)": {"min": 415}, "YS (MPa)": {"min": 240},
-            "Elongation (%)": {"min": 30},
-        },
-        "impact": {"temperature": -45, "min_avg_J": 20},
-        "nace": "Low-temp application; NACE per project specification",
-    },
-}
- 
-# ── System Prompt ─────────────────────────────────────────────────────────────
-SYSTEM_PROMPT = """You are an expert materials engineer specializing in reviewing Material Test Reports (MTR) / Mill Certificates against international standards (ASME, ASTM, EN, GB/T, API, ISO, NACE).
- 
-When reviewing a certificate:
-1. Extract ALL chemical composition values found
-2. Extract ALL mechanical test results (UTS, YS, elongation, hardness, reduction of area)
-3. Extract impact test results if present (temperature, individual and average energy)
-4. Compare each value against the provided standard limits
-5. Flag FAIL for any out-of-spec value, MISSING for required but absent values, PASS for conforming values
-6. Note NACE compliance (hardness HRC ≤22, HIC, SSC test results)
-7. Give an overall PASS / FAIL / CONDITIONAL verdict
- 
-Respond ONLY in valid JSON matching this exact schema (no markdown fences, no preamble):
-{
-  "document_info": {
-    "heat_number": "string or null",
-    "lot_number": "string or null",
-    "material_grade": "string or null",
-    "manufacturer": "string or null",
-    "po_number": "string or null",
-    "test_date": "string or null"
-  },
-  "chemical_composition": {
-    "ELEMENT": {"found": number_or_null, "min": number_or_null, "max": number_or_null, "unit": "%", "status": "PASS|FAIL|MISSING"}
-  },
-  "mechanical_properties": {
-    "PROPERTY": {"found": number_or_null, "min": number_or_null, "max": number_or_null, "unit": "string", "status": "PASS|FAIL|MISSING"}
-  },
-  "impact_tests": {
-    "temperature": number_or_null,
-    "unit": "°C",
-    "specimens": [{"id": "string", "energy": number, "unit": "J"}],
-    "average": number_or_null,
-    "required_avg": number_or_null,
-    "status": "PASS|FAIL|MISSING|N/A"
-  },
-  "nace_compliance": {
-    "applicable": true_or_false,
-    "standard": "string",
-    "hardness_hrc": number_or_null,
-    "hardness_limit": 22,
-    "hic_tested": true_or_false,
-    "ssc_tested": true_or_false,
-    "status": "PASS|FAIL|NOT_TESTED|N/A",
-    "notes": "string"
-  },
-  "overall_verdict": "PASS|FAIL|CONDITIONAL",
-  "failed_items": ["string"],
-  "missing_items": ["string"],
-  "warnings": ["string"],
-  "summary": "string"
-}"""
- 
+
+# ── Session state ─────────────────────────────────────────────────────────────
+if "standards_library" not in st.session_state:
+    st.session_state.standards_library = {}
+if "review_result" not in st.session_state:
+    st.session_state.review_result = None
+if "review_filename" not in st.session_state:
+    st.session_state.review_filename = ""
+if "review_source" not in st.session_state:
+    st.session_state.review_source = ""
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
-def encode_file(file_bytes: bytes) -> str:
-    return base64.standard_b64encode(file_bytes).decode("utf-8")
- 
 def get_client():
     try:
         key = st.secrets["ANTHROPIC_API_KEY"]
     except Exception:
         key = None
     if not key:
-        st.error("❌ **ANTHROPIC_API_KEY not found.** Add it in Streamlit → Settings → Secrets, or create a `.streamlit/secrets.toml` file locally.")
+        st.error("❌ ANTHROPIC_API_KEY not found in Streamlit Secrets.")
         st.stop()
     return anthropic.Anthropic(api_key=key)
- 
-def status_badge(status: str) -> str:
-    mapping = {
-        "PASS":      '<span class="pill-pass">✓ PASS</span>',
-        "FAIL":      '<span class="pill-fail">✕ FAIL</span>',
-        "MISSING":   '<span class="pill-missing">? MISSING</span>',
-        "N/A":       '<span class="pill-na">– N/A</span>',
-        "NOT_TESTED":'<span class="pill-na">– NOT TESTED</span>',
+
+def b64(data: bytes) -> str:
+    return base64.standard_b64encode(data).decode("utf-8")
+
+def status_badge(s: str) -> str:
+    pills = {
+        "PASS":       '<span class="pill-pass">✓ PASS</span>',
+        "FAIL":       '<span class="pill-fail">✕ FAIL</span>',
+        "MISSING":    '<span class="pill-missing">? MISSING</span>',
+        "N/A":        '<span class="pill-na">– N/A</span>',
+        "NOT_TESTED": '<span class="pill-na">– NOT TESTED</span>',
     }
-    return mapping.get(status, f'<span class="pill-na">{status}</span>')
- 
-def call_claude(file_bytes: bytes, media_type: str, standard_name: str,
-                standard: dict, nace_required: bool, notes: str) -> dict:
-    client = get_client()
-    b64 = encode_file(file_bytes)
-    doc_type = "document" if media_type == "application/pdf" else "image"
- 
-    context = f"""
-STANDARD: {standard_name} ({standard['key']})
-CHEMICAL COMPOSITION LIMITS: {json.dumps(standard['chemical'], indent=2)}
-MECHANICAL PROPERTY LIMITS:  {json.dumps(standard['mechanical'], indent=2)}
-IMPACT TEST REQUIREMENTS:    {json.dumps(standard.get('impact') or {'note': 'Not required for this standard'}, indent=2)}
-NACE NOTE:                   {standard['nace']}
-PROJECT NACE REQUIRED:       {nace_required}
-ADDITIONAL REVIEWER NOTES:   {notes or 'None'}
- 
-Review the attached certificate against ALL requirements above and respond in the required JSON schema.
-"""
-    if doc_type == "document":
-        content = [
-            {"type": "document", "source": {"type": "base64", "media_type": media_type, "data": b64}},
-            {"type": "text", "text": context},
-        ]
-    else:
-        content = [
-            {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
-            {"type": "text", "text": context},
-        ]
- 
-    response = client.messages.create(
-        model="claude-opus-4-5",
-        max_tokens=4096,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": content}],
-    )
- 
-    raw = response.content[0].text.strip()
+    return pills.get(s, f'<span class="pill-na">{s or "—"}</span>')
+
+def parse_json_response(raw: str) -> dict:
+    raw = raw.strip()
     if raw.startswith("```"):
-        raw = raw.split("```")[1]
+        parts = raw.split("```")
+        raw = parts[1] if len(parts) > 1 else raw
         if raw.startswith("json"):
             raw = raw[4:]
-    return json.loads(raw)
- 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("## 🔬 MatCert")
-    st.markdown("*AI-powered material certificate reviewer*")
-    st.divider()
- 
-    uploaded_file = st.file_uploader(
-        "Upload Certificate",
-        type=["pdf", "jpg", "jpeg", "png", "webp"],
-        help="Upload a PDF or image of the material test report / mill certificate",
-    )
- 
-    standard_name = st.selectbox("Material Standard", list(STANDARDS.keys()))
-    standard = STANDARDS[standard_name]
- 
-    nace_required = st.toggle("NACE / Sour Service Required", value=False,
-                              help="Enable if project specification requires NACE MR0175 or sour service compliance")
- 
-    notes = st.text_area("Additional Notes (optional)",
-                         placeholder="e.g. HIC test required, wall thickness 25mm, heat treatment condition…",
-                         height=90)
- 
-    st.divider()
-    review_btn = st.button("🔍 Review Certificate", type="primary",
-                           disabled=(uploaded_file is None), use_container_width=True)
- 
-    st.divider()
-    st.markdown("**Supported Standards**")
-    st.markdown("""
-- ASME A106 Gr.B / Gr.C
-- ASTM A516 Gr.70
-- ASTM A333 Gr.6
-- Q355D (GB/T 1591)
-- NACE MR0175 / TM0284 / TM0177
-""")
- 
-# ── Main area ─────────────────────────────────────────────────────────────────
-st.markdown("# Material Certificate Reviewer")
-st.markdown("Upload a mill certificate, select the applicable standard, and let AI verify compliance automatically.")
- 
-if not uploaded_file and not review_btn:
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.info("**Step 1** — Upload a PDF or image of your material certificate using the sidebar.")
-    with col2:
-        st.info("**Step 2** — Select the applicable material standard (ASME, ASTM, Q355D, etc.).")
-    with col3:
-        st.info("**Step 3** — Click **Review Certificate** to get an instant AI compliance verdict.")
-    st.stop()
- 
-# ── Run review ────────────────────────────────────────────────────────────────
-if review_btn and uploaded_file:
-    file_bytes = uploaded_file.read()
-    fname = uploaded_file.name.lower()
- 
-    if fname.endswith(".pdf"):
-        media_type = "application/pdf"
-    elif fname.endswith((".jpg", ".jpeg")):
-        media_type = "image/jpeg"
-    elif fname.endswith(".png"):
-        media_type = "image/png"
-    elif fname.endswith(".webp"):
-        media_type = "image/webp"
+    return json.loads(raw.strip())
+
+# ── STEP 1: Identify standard from certificate ────────────────────────────────
+def identify_standard(cert_bytes: bytes, cert_media_type: str) -> dict:
+    """First AI call: just identify what standard/grade the certificate is for."""
+    client = get_client()
+
+    if cert_media_type == "application/pdf":
+        cert_block = {
+            "type": "document",
+            "source": {"type": "base64", "media_type": "application/pdf", "data": b64(cert_bytes)},
+        }
     else:
-        st.error("Unsupported file type. Please upload PDF, JPG, PNG, or WEBP.")
-        st.stop()
- 
-    with st.spinner("Analyzing certificate… this may take 15–30 seconds."):
-        try:
-            result = call_claude(file_bytes, media_type, standard_name,
-                                 standard, nace_required, notes)
-            st.session_state["result"] = result
-            st.session_state["filename"] = uploaded_file.name
-            st.session_state["standard_name"] = standard_name
-        except json.JSONDecodeError as e:
-            st.error(f"Could not parse AI response as JSON: {e}")
-            st.stop()
-        except Exception as e:
-            st.error(f"Error calling Anthropic API: {e}")
-            st.stop()
- 
-# ── Display results ───────────────────────────────────────────────────────────
-if "result" in st.session_state:
-    r = st.session_state["result"]
-    fname = st.session_state.get("filename", "")
-    sname = st.session_state.get("standard_name", "")
- 
-    verdict = r.get("overall_verdict", "CONDITIONAL")
-    verdict_color = {"PASS": "verdict-pass", "FAIL": "verdict-fail"}.get(verdict, "verdict-cond")
-    verdict_icon  = {"PASS": "✅", "FAIL": "❌"}.get(verdict, "⚠️")
-    verdict_text  = {"PASS": "Certificate APPROVED", "FAIL": "Certificate REJECTED"}.get(verdict, "Conditional — Review Required")
- 
-    st.markdown(f"""
-    <div class="{verdict_color}">
-      <span style="font-size:1.5rem">{verdict_icon}</span>
-      <strong style="font-family:'Syne',sans-serif;font-size:1.2rem;margin-left:.5rem">{verdict_text}</strong>
-      <span style="font-size:.8rem;color:#9ca3af;margin-left:.75rem">{sname} · {fname}</span>
-    </div>
-    """, unsafe_allow_html=True)
- 
-    st.markdown("")
- 
-    # ── Document info ──
-    di = r.get("document_info", {})
-    if any(di.values()):
-        cols = st.columns(6)
-        fields = [("Heat No.", "heat_number"), ("Lot No.", "lot_number"),
-                  ("Grade", "material_grade"), ("Manufacturer", "manufacturer"),
-                  ("PO No.", "po_number"), ("Test Date", "test_date")]
-        for col, (label, key) in zip(cols, fields):
-            with col:
-                st.markdown(f'<div class="info-label">{label}</div><div class="info-value">{di.get(key) or "—"}</div>', unsafe_allow_html=True)
-        st.divider()
- 
-    # ── Tabs ──
-    failed_count  = len(r.get("failed_items", []))
-    missing_count = len(r.get("missing_items", []))
-    issues_label  = f"Issues ({failed_count + missing_count})" if failed_count + missing_count else "Issues"
- 
-    tab_chem, tab_mech, tab_impact, tab_nace, tab_issues = st.tabs(
-        ["🧪 Chemistry", "⚙️ Mechanical", "❄️ Impact Test", "🛡️ NACE", issues_label]
+        cert_block = {
+            "type": "image",
+            "source": {"type": "base64", "media_type": cert_media_type, "data": b64(cert_bytes)},
+        }
+
+    prompt = """Read this material test report / mill certificate and identify the material standard.
+Respond ONLY in this exact JSON (no markdown, no extra text):
+{
+  "specification": "e.g. ASTM A106",
+  "grade": "e.g. Grade B",
+  "full_name": "e.g. ASTM A106 Grade B Seamless Carbon Steel Pipe",
+  "keywords": ["list", "of", "searchable", "terms", "e.g.", "A106", "Gr.B", "seamless"],
+  "product_form": "e.g. Seamless Pipe / Plate / Forging / Fitting",
+  "governing_body": "e.g. ASTM / ASME / API / EN / GB",
+  "heat_number": "if visible, else null",
+  "manufacturer": "if visible, else null",
+  "test_date": "if visible, else null"
+}"""
+
+    resp = client.messages.create(
+        model="claude-opus-4-5",
+        max_tokens=512,
+        messages=[{"role": "user", "content": [cert_block, {"type": "text", "text": prompt}]}],
     )
- 
-    # ── Chemistry tab ──
-    with tab_chem:
-        chem = r.get("chemical_composition", {})
-        if chem:
-            rows = []
-            for el, v in chem.items():
-                rows.append({
-                    "Element": el,
-                    "Found": v.get("found") if v.get("found") is not None else "—",
-                    "Min": v.get("min") if v.get("min") is not None else "—",
-                    "Max": v.get("max") if v.get("max") is not None else "—",
-                    "Unit": v.get("unit", "%"),
-                    "Status": v.get("status", "—"),
-                })
-            # Display with colored status
-            header_cols = st.columns([1.2, 1.2, 1.2, 1.2, 0.8, 1.5])
-            for col, h in zip(header_cols, ["Element", "Found", "Min", "Max", "Unit", "Status"]):
-                col.markdown(f"**{h}**")
-            for row in rows:
-                cols = st.columns([1.2, 1.2, 1.2, 1.2, 0.8, 1.5])
-                cols[0].markdown(f"`{row['Element']}`")
-                cols[1].write(row["Found"])
-                cols[2].write(row["Min"])
-                cols[3].write(row["Max"])
-                cols[4].write(row["Unit"])
-                cols[5].markdown(status_badge(row["Status"]), unsafe_allow_html=True)
+    return parse_json_response(resp.content[0].text)
+
+
+# ── STEP 2: Search library for matching standard ──────────────────────────────
+def search_library(identified: dict) -> list:
+    """
+    Search the library for standards that match the identified spec.
+    Returns list of matching library keys (could be 0, 1, or more).
+    """
+    lib = st.session_state.standards_library
+    if not lib:
+        return []
+
+    keywords = [k.lower() for k in identified.get("keywords", [])]
+    keywords += [
+        identified.get("specification", "").lower(),
+        identified.get("grade", "").lower(),
+        identified.get("governing_body", "").lower(),
+    ]
+    keywords = [k for k in keywords if k]
+
+    matches = []
+    for key, entry in lib.items():
+        searchable = (
+            entry["name"].lower() + " " +
+            entry.get("description", "").lower() + " " +
+            entry.get("filename", "").lower()
+        )
+        score = sum(1 for kw in keywords if kw in searchable)
+        if score > 0:
+            matches.append((score, key))
+
+    matches.sort(reverse=True)
+    # Return keys of top matches (score > 0)
+    return [key for score, key in matches if score > 0]
+
+
+# ── STEP 3: Review with library document ─────────────────────────────────────
+def review_with_library(cert_bytes, cert_media_type, std_keys, identified, nace_req, notes) -> dict:
+    client = get_client()
+    lib = st.session_state.standards_library
+    content = []
+    std_names = []
+
+    for key in std_keys:
+        if key in lib:
+            entry = lib[key]
+            content.append({
+                "type": "document",
+                "source": {"type": "base64", "media_type": "application/pdf",
+                           "data": b64(entry["file_bytes"])},
+                "title": f"STANDARD DOCUMENT: {entry['name']}",
+            })
+            std_names.append(entry["name"])
+
+    if cert_media_type == "application/pdf":
+        content.append({
+            "type": "document",
+            "source": {"type": "base64", "media_type": "application/pdf", "data": b64(cert_bytes)},
+            "title": "MATERIAL TEST REPORT TO REVIEW",
+        })
+    else:
+        content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": cert_media_type, "data": b64(cert_bytes)},
+        })
+
+    instruction = f"""The certificate has been identified as: {identified.get('full_name','unknown')}
+
+Standard documents provided from library:
+{chr(10).join(f'  - {n}' for n in std_names)}
+
+Instructions:
+1. Read the standard document(s) and extract the EXACT chemical, mechanical, impact, and NACE requirements for {identified.get('full_name','')}
+2. Read the mill certificate and extract ALL reported values
+3. Compare every value against the standard limits
+4. NACE/Sour service required by project: {nace_req}
+5. Additional notes: {notes or 'None'}
+
+Respond ONLY in valid JSON matching this schema exactly:
+{REVIEW_JSON_SCHEMA}"""
+
+    content.append({"type": "text", "text": instruction})
+
+    resp = client.messages.create(
+        model="claude-opus-4-5",
+        max_tokens=4096,
+        system="You are a senior materials engineer reviewing mill certificates against industry standards. Extract exact limits from the provided standard documents. Be precise and thorough.",
+        messages=[{"role": "user", "content": content}],
+    )
+    result = parse_json_response(resp.content[0].text)
+    result["_source"] = "LIBRARY"
+    result["_library_docs"] = std_names
+    return result
+
+
+# ── STEP 3b: Review with AI knowledge (fallback) ──────────────────────────────
+def review_with_ai_knowledge(cert_bytes, cert_media_type, identified, nace_req, notes) -> dict:
+    client = get_client()
+    content = []
+
+    if cert_media_type == "application/pdf":
+        content.append({
+            "type": "document",
+            "source": {"type": "base64", "media_type": "application/pdf", "data": b64(cert_bytes)},
+        })
+    else:
+        content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": cert_media_type, "data": b64(cert_bytes)},
+        })
+
+    instruction = f"""The certificate has been identified as: {identified.get('full_name', 'unknown')}
+Specification: {identified.get('specification','')} {identified.get('grade','')}
+
+No matching standard document was found in the library.
+Use your expert knowledge of this standard to apply the correct requirements.
+
+If you are confident you know the exact limits for {identified.get('full_name','this standard')}, apply them with HIGH or MEDIUM confidence.
+If this is an obscure, proprietary, or project-specific standard you cannot verify, set confidence to LOW and note which items could not be verified.
+
+NACE/Sour service required by project: {nace_req}
+Additional notes: {notes or 'None'}
+
+Respond ONLY in valid JSON matching this schema exactly:
+{REVIEW_JSON_SCHEMA}"""
+
+    content.append({"type": "text", "text": instruction})
+
+    resp = client.messages.create(
+        model="claude-opus-4-5",
+        max_tokens=4096,
+        system="You are a senior materials engineer with deep knowledge of ASME, ASTM, API, EN, GB/T, JIS, DNV, ISO, and NACE standards. When standard documents are not provided, apply your training knowledge accurately. Always flag LOW confidence for standards you cannot verify.",
+        messages=[{"role": "user", "content": content}],
+    )
+    result = parse_json_response(resp.content[0].text)
+    result["_source"] = "AI_KNOWLEDGE"
+    result["_library_docs"] = []
+    return result
+
+
+# ── JSON Schema (shared) ──────────────────────────────────────────────────────
+REVIEW_JSON_SCHEMA = """{
+  "detected_standard": {
+    "specification": "string",
+    "grade": "string",
+    "full_name": "string",
+    "source": "Library Document|AI Knowledge|Unknown",
+    "confidence": "HIGH|MEDIUM|LOW",
+    "confidence_reason": "brief explanation"
+  },
+  "document_info": {
+    "heat_number": null,
+    "lot_number": null,
+    "material_grade": null,
+    "manufacturer": null,
+    "po_number": null,
+    "test_date": null,
+    "certificate_number": null,
+    "size_dimensions": null
+  },
+  "chemical_composition": {
+    "ELEMENT": {"found": null, "min": null, "max": null, "unit": "%", "status": "PASS|FAIL|MISSING"}
+  },
+  "mechanical_properties": {
+    "PROPERTY": {"found": null, "min": null, "max": null, "unit": "", "status": "PASS|FAIL|MISSING"}
+  },
+  "impact_tests": {
+    "temperature": null,
+    "unit": "°C",
+    "specimens": [{"id": "string", "energy": 0, "unit": "J"}],
+    "average": null,
+    "required_avg": null,
+    "status": "PASS|FAIL|MISSING|N/A"
+  },
+  "nace_compliance": {
+    "applicable": false,
+    "standard": "",
+    "hardness_hrc": null,
+    "hardness_limit": 22,
+    "hic_tested": false,
+    "ssc_tested": false,
+    "status": "N/A",
+    "notes": ""
+  },
+  "overall_verdict": "PASS|FAIL|CONDITIONAL",
+  "failed_items": [],
+  "missing_items": [],
+  "warnings": [],
+  "summary": ""
+}"""
+
+
+# ── Main orchestrator ─────────────────────────────────────────────────────────
+def full_review(cert_bytes, cert_media_type, nace_req, notes):
+    """
+    Full auto workflow:
+    1. Identify standard from certificate
+    2. Search library
+    3. Review with library doc OR AI knowledge fallback
+    """
+    # Step 1: identify
+    with st.status("🔍 Step 1/3 — Reading certificate and identifying standard…", expanded=True) as status:
+        identified = identify_standard(cert_bytes, cert_media_type)
+        st.write(f"✅ Identified: **{identified.get('full_name', 'Unknown')}**")
+
+        # Step 2: search library
+        status.update(label="🔍 Step 2/3 — Searching standards library…")
+        matching_keys = search_library(identified)
+
+        if matching_keys:
+            lib = st.session_state.standards_library
+            matched_names = [lib[k]["name"] for k in matching_keys]
+            st.write(f"✅ Found in library: **{', '.join(matched_names)}**")
+            source_type = "LIBRARY"
         else:
-            st.info("No chemical composition data found in the certificate.")
- 
-    # ── Mechanical tab ──
-    with tab_mech:
-        mech = r.get("mechanical_properties", {})
-        if mech:
-            header_cols = st.columns([2, 1.2, 1.2, 1.2, 1.2, 1.5])
-            for col, h in zip(header_cols, ["Property", "Found", "Min", "Max", "Unit", "Status"]):
-                col.markdown(f"**{h}**")
-            for prop, v in mech.items():
-                cols = st.columns([2, 1.2, 1.2, 1.2, 1.2, 1.5])
-                cols[0].write(prop)
-                cols[1].write(v.get("found") if v.get("found") is not None else "—")
-                cols[2].write(v.get("min") if v.get("min") is not None else "—")
-                cols[3].write(v.get("max") if v.get("max") is not None else "—")
-                cols[4].write(v.get("unit", ""))
-                cols[5].markdown(status_badge(v.get("status", "—")), unsafe_allow_html=True)
+            st.write("ℹ️ Not found in library — using AI built-in knowledge")
+            source_type = "AI_KNOWLEDGE"
+
+        # Step 3: review
+        status.update(label="🔍 Step 3/3 — Reviewing certificate against requirements…")
+        if source_type == "LIBRARY":
+            result = review_with_library(cert_bytes, cert_media_type, matching_keys,
+                                         identified, nace_req, notes)
         else:
-            st.info("No mechanical property data found.")
- 
-    # ── Impact tab ──
-    with tab_impact:
-        imp = r.get("impact_tests", {})
-        if imp and imp.get("status") != "N/A":
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Test Temperature", f"{imp.get('temperature', '—')} {imp.get('unit','°C')}")
-            col2.metric("Average Energy", f"{imp.get('average', '—')} J")
-            col3.metric("Required Average", f"{imp.get('required_avg', '—')} J")
-            col4.markdown("**Status**")
-            col4.markdown(status_badge(imp.get("status", "—")), unsafe_allow_html=True)
- 
-            specimens = imp.get("specimens", [])
-            if specimens:
-                st.markdown("**Individual Specimens**")
-                spec_cols = st.columns(len(specimens))
-                for col, s in zip(spec_cols, specimens):
-                    col.metric(s.get("id", "Specimen"), f"{s.get('energy','—')} {s.get('unit','J')}")
+            result = review_with_ai_knowledge(cert_bytes, cert_media_type,
+                                              identified, nace_req, notes)
+
+        result["_identified"] = identified
+        status.update(label="✅ Review complete!", state="complete", expanded=False)
+
+    return result, source_type
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ── UI
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown("# 🔬 MatCert — Material Certificate Reviewer")
+st.caption("Upload any mill certificate → AI identifies the standard → searches library → reviews automatically")
+st.divider()
+
+tab_review, tab_library = st.tabs(["📋 Review Certificate", "📚 Standards Library"])
+
+# ══════════════════════════════════════════════════════
+# TAB 1 — REVIEW
+# ══════════════════════════════════════════════════════
+with tab_review:
+    left, right = st.columns([1, 1.8], gap="large")
+
+    with left:
+        lib_count = len(st.session_state.standards_library)
+        if lib_count:
+            st.success(f"📚 {lib_count} standard(s) in library — auto-matching enabled")
         else:
-            st.info("No impact test data found / not required for this standard.")
- 
-    # ── NACE tab ──
-    with tab_nace:
-        nace = r.get("nace_compliance", {})
-        if nace:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**NACE Compliance Details**")
-                st.markdown(f"**Standard:** {nace.get('standard','—')}")
-                st.markdown(f"**Applicable:** {'Yes' if nace.get('applicable') else 'No'}")
-                hrc = nace.get("hardness_hrc")
-                lim = nace.get("hardness_limit", 22)
-                st.markdown(f"**Hardness HRC:** {hrc if hrc is not None else '—'} / max {lim}")
-                st.markdown(f"**HIC Tested:** {'✅ Yes' if nace.get('hic_tested') else '❌ No'}")
-                st.markdown(f"**SSC Tested:** {'✅ Yes' if nace.get('ssc_tested') else '❌ No'}")
-                st.markdown("**Overall Status:**")
-                st.markdown(status_badge(nace.get("status", "—")), unsafe_allow_html=True)
-            with col2:
-                st.markdown("**Notes**")
-                st.info(nace.get("notes") or standard["nace"])
-        else:
-            st.info("No NACE compliance data available.")
- 
-    # ── Issues tab ──
-    with tab_issues:
-        failed_items  = r.get("failed_items", [])
-        missing_items = r.get("missing_items", [])
-        warnings      = r.get("warnings", [])
- 
-        if not failed_items and not missing_items and not warnings:
-            st.success("✅ No issues found — all values are within specification.")
-        else:
-            if failed_items:
-                st.markdown("#### ❌ Failed Items")
-                for item in failed_items:
-                    st.error(item)
-            if missing_items:
-                st.markdown("#### ⚠️ Missing Items")
-                for item in missing_items:
-                    st.warning(item)
-            if warnings:
-                st.markdown("#### ℹ️ Warnings")
-                for w in warnings:
-                    st.info(w)
- 
-    # ── Summary ──
-    if r.get("summary"):
+            st.info("📚 Library empty — AI will use built-in knowledge")
+
+        st.markdown("#### Upload Certificate")
+        uploaded_cert = st.file_uploader(
+            "Mill Certificate / MTR",
+            type=["pdf", "jpg", "jpeg", "png", "webp"],
+            key="cert_uploader",
+            help="Any mill certificate — PDF or photo. The AI identifies the standard automatically.",
+        )
+
+        st.markdown("#### Options")
+        nace_req = st.toggle("NACE / Sour Service Required", value=False)
+        extra_notes = st.text_area(
+            "Additional Notes",
+            placeholder="e.g. HIC test required, PWHT applied, thickness 25mm…",
+            height=75,
+        )
+
+        review_btn = st.button(
+            "🔍 Review Certificate",
+            type="primary",
+            disabled=(uploaded_cert is None),
+            use_container_width=True,
+        )
+
         st.divider()
-        st.markdown("**Review Summary**")
-        st.markdown(r["summary"])
- 
-    # ── Download JSON ──
+        st.markdown("**How it works:**")
+        st.markdown("""
+<div class="step"><span class="step-num">1</span>AI reads certificate → identifies grade & standard</div>
+<div class="step"><span class="step-num">2</span>Searches your library for matching standard PDF</div>
+<div class="step"><span class="step-num">3a</span>Found → reviews against your document ✅</div>
+<div class="step"><span class="step-num">3b</span>Not found → uses AI knowledge as fallback ⚡</div>
+        """, unsafe_allow_html=True)
+
+    with right:
+        if not uploaded_cert and not st.session_state.review_result:
+            st.markdown("""
+            <div style='padding:3rem 2rem;text-align:center;background:#111318;
+                        border:1px dashed #252830;border-radius:12px;margin-top:1rem'>
+              <div style='font-size:3rem;margin-bottom:1rem'>📄</div>
+              <div style='font-family:Syne,sans-serif;font-size:1.1rem;font-weight:700;margin-bottom:.75rem'>
+                Upload Any Mill Certificate
+              </div>
+              <div style='font-size:.85rem;color:#6b7280;line-height:1.8'>
+                Works with <strong>any standard</strong>:<br>
+                ASME · ASTM · API · EN · GB/T · JIS · DNV · ISO<br><br>
+                The AI identifies the standard automatically.<br>
+                No manual selection required.
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        if review_btn and uploaded_cert:
+            fname = uploaded_cert.name.lower()
+            cert_bytes = uploaded_cert.read()
+
+            if   fname.endswith(".pdf"):             mt = "application/pdf"
+            elif fname.endswith((".jpg", ".jpeg")):  mt = "image/jpeg"
+            elif fname.endswith(".png"):             mt = "image/png"
+            elif fname.endswith(".webp"):            mt = "image/webp"
+            else:
+                st.error("Unsupported file type."); st.stop()
+
+            try:
+                result, source_type = full_review(cert_bytes, mt, nace_req, extra_notes)
+                st.session_state.review_result   = result
+                st.session_state.review_filename = uploaded_cert.name
+                st.session_state.review_source   = source_type
+            except json.JSONDecodeError as e:
+                st.error(f"Could not parse AI response: {e}"); st.stop()
+            except Exception as e:
+                st.error(f"Error: {e}"); st.stop()
+
+        # ── Show results ──────────────────────────────────────────────────────
+        if st.session_state.review_result:
+            r           = st.session_state.review_result
+            fname       = st.session_state.review_filename
+            source_type = st.session_state.review_source
+
+            ds      = r.get("detected_standard", {})
+            verdict = r.get("overall_verdict", "CONDITIONAL")
+            vclass  = {"PASS": "verdict-pass", "FAIL": "verdict-fail"}.get(verdict, "verdict-cond")
+            vicon   = {"PASS": "✅", "FAIL": "❌"}.get(verdict, "⚠️")
+            vtext   = {"PASS": "Certificate APPROVED",
+                       "FAIL": "Certificate REJECTED"}.get(verdict, "Conditional — Review Required")
+            conf    = ds.get("confidence", "—")
+
+            # ── Source banner ──
+            if source_type == "LIBRARY":
+                lib_docs = r.get("_library_docs", [])
+                st.markdown(f"""
+                <div class="source-library">
+                  📚 <strong>Source: Standards Library</strong> —
+                  Reviewed against: {', '.join(lib_docs) or '—'}
+                  &nbsp;·&nbsp; Confidence: <span class="conf-{conf}">{conf}</span>
+                </div>""", unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                <div class="source-ai">
+                  ⚡ <strong>Source: AI Built-in Knowledge</strong> —
+                  Standard not found in library; AI applied training knowledge
+                  &nbsp;·&nbsp; Confidence: <span class="conf-{conf}">{conf}</span>
+                  <br><small style="color:#9ca3af">
+                  💡 Upload <strong>{ds.get('specification','the standard')}</strong>
+                  PDF to the library for higher accuracy
+                  </small>
+                </div>""", unsafe_allow_html=True)
+
+            if conf == "LOW":
+                st.warning(f"⚠️ Low confidence: {ds.get('confidence_reason','Standard could not be fully verified.')}")
+
+            # ── Detected standard ──
+            st.markdown(f"""
+            <div class="detect-box">
+              <div class="detect-label">Standard Identified from Certificate</div>
+              <div class="detect-value">{ds.get('full_name') or ds.get('specification','Unknown')}</div>
+              <div style="font-size:.75rem;color:#6b7280;margin-top:.3rem">
+                {ds.get('specification','')} {ds.get('grade','')}
+                &nbsp;·&nbsp; {ds.get('product_form') or r.get('_identified',{}).get('product_form','') or ''}
+              </div>
+            </div>""", unsafe_allow_html=True)
+
+            # ── Verdict ──
+            st.markdown(f"""
+            <div class="{vclass}">
+              <span style="font-size:1.4rem">{vicon}</span>
+              <strong style="font-family:'Syne',sans-serif;font-size:1.1rem;margin-left:.5rem">{vtext}</strong>
+              <span style="font-size:.78rem;color:#9ca3af;margin-left:.75rem">{fname}</span>
+            </div>""", unsafe_allow_html=True)
+
+            # ── Document info ──
+            di = r.get("document_info", {})
+            fields = [("Heat No.","heat_number"),("Grade","material_grade"),
+                      ("Manufacturer","manufacturer"),("Cert No.","certificate_number"),
+                      ("Test Date","test_date"),("Size","size_dimensions")]
+            cols = st.columns(len(fields))
+            for col, (label, key) in zip(cols, fields):
+                with col:
+                    st.markdown(
+                        f'<div class="info-label">{label}</div>'
+                        f'<div class="info-value">{di.get(key) or "—"}</div>',
+                        unsafe_allow_html=True)
+            st.divider()
+
+            # ── Result tabs ──
+            fi = r.get("failed_items", [])
+            mi = r.get("missing_items", [])
+            wi = r.get("warnings", [])
+            issues_lbl = f"Issues ({len(fi)+len(mi)})" if fi or mi else "Issues ✓"
+
+            t1, t2, t3, t4, t5 = st.tabs(
+                ["🧪 Chemistry", "⚙️ Mechanical", "❄️ Impact", "🛡️ NACE", issues_lbl])
+
+            with t1:
+                chem = r.get("chemical_composition", {})
+                if chem:
+                    h = st.columns([1.2,1.2,1.2,1.2,0.8,1.5])
+                    for c, lbl in zip(h, ["Element","Found","Min","Max","Unit","Status"]):
+                        c.markdown(f"**{lbl}**")
+                    for el, v in chem.items():
+                        cs = st.columns([1.2,1.2,1.2,1.2,0.8,1.5])
+                        cs[0].markdown(f"`{el}`")
+                        cs[1].write(v.get("found") if v.get("found") is not None else "—")
+                        cs[2].write(v.get("min")   if v.get("min")   is not None else "—")
+                        cs[3].write(v.get("max")   if v.get("max")   is not None else "—")
+                        cs[4].write(v.get("unit", "%"))
+                        cs[5].markdown(status_badge(v.get("status","—")), unsafe_allow_html=True)
+                else:
+                    st.info("No chemical composition data found.")
+
+            with t2:
+                mech = r.get("mechanical_properties", {})
+                if mech:
+                    h = st.columns([2,1.2,1.2,1.2,1.2,1.5])
+                    for c, lbl in zip(h, ["Property","Found","Min","Max","Unit","Status"]):
+                        c.markdown(f"**{lbl}**")
+                    for prop, v in mech.items():
+                        cs = st.columns([2,1.2,1.2,1.2,1.2,1.5])
+                        cs[0].write(prop)
+                        cs[1].write(v.get("found") if v.get("found") is not None else "—")
+                        cs[2].write(v.get("min")   if v.get("min")   is not None else "—")
+                        cs[3].write(v.get("max")   if v.get("max")   is not None else "—")
+                        cs[4].write(v.get("unit",""))
+                        cs[5].markdown(status_badge(v.get("status","—")), unsafe_allow_html=True)
+                else:
+                    st.info("No mechanical data found.")
+
+            with t3:
+                imp = r.get("impact_tests", {})
+                if imp and imp.get("status") != "N/A":
+                    c1,c2,c3,c4 = st.columns(4)
+                    c1.metric("Temperature", f"{imp.get('temperature','—')} {imp.get('unit','°C')}")
+                    c2.metric("Avg Energy",  f"{imp.get('average','—')} J")
+                    c3.metric("Required",    f"{imp.get('required_avg','—')} J")
+                    c4.markdown("**Status**")
+                    c4.markdown(status_badge(imp.get("status","—")), unsafe_allow_html=True)
+                    for s in imp.get("specimens",[]):
+                        st.write(f"  · {s.get('id','Spec')}: {s.get('energy','—')} {s.get('unit','J')}")
+                else:
+                    st.info("Impact tests not required or not found.")
+
+            with t4:
+                nace = r.get("nace_compliance", {})
+                if nace:
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.markdown(f"**Standard:** {nace.get('standard','—')}")
+                        st.markdown(f"**Applicable:** {'Yes' if nace.get('applicable') else 'No'}")
+                        hrc = nace.get("hardness_hrc")
+                        st.markdown(f"**Hardness HRC:** {hrc if hrc is not None else '—'} / max {nace.get('hardness_limit',22)}")
+                        st.markdown(f"**HIC Tested:** {'✅' if nace.get('hic_tested') else '❌'}")
+                        st.markdown(f"**SSC Tested:** {'✅' if nace.get('ssc_tested') else '❌'}")
+                        st.markdown("**Status:**")
+                        st.markdown(status_badge(nace.get("status","—")), unsafe_allow_html=True)
+                    with c2:
+                        st.info(nace.get("notes") or "No NACE notes.")
+
+            with t5:
+                if not fi and not mi and not wi:
+                    st.success("✅ All values within specification.")
+                for item in fi: st.error(item)
+                for item in mi: st.warning(item)
+                for item in wi: st.info(item)
+
+            if r.get("summary"):
+                st.divider()
+                st.markdown("**Summary**")
+                st.markdown(r["summary"])
+
+            st.divider()
+            st.download_button(
+                "⬇️ Download Review (JSON)",
+                data=json.dumps(r, indent=2),
+                file_name=f"review_{fname.replace(' ','_')}.json",
+                mime="application/json",
+            )
+
+# ══════════════════════════════════════════════════════
+# TAB 2 — STANDARDS LIBRARY
+# ══════════════════════════════════════════════════════
+with tab_library:
+    st.markdown("### 📚 Standards Library")
+    st.markdown(
+        "Upload your actual standard PDFs. When reviewing a certificate, the AI "
+        "automatically searches this library first. If the standard isn't here, "
+        "it falls back to its built-in knowledge."
+    )
     st.divider()
-    st.download_button(
-        "⬇️ Download Full Review (JSON)",
-        data=json.dumps(r, indent=2),
-        file_name=f"review_{fname.replace(' ','_')}.json",
-        mime="application/json",
-    )
+
+    left2, right2 = st.columns([1, 1.5], gap="large")
+
+    with left2:
+        st.markdown("#### Add a Standard")
+        std_file = st.file_uploader("Standard PDF", type=["pdf"], key="std_uploader")
+        std_name = st.text_input("Standard Name *", placeholder="e.g. ASME A106 Grade B")
+        std_desc = st.text_area("Description (optional)",
+                                placeholder="e.g. Seamless pipe for high-temp service. Include keywords like spec number, grade, product form.",
+                                height=80)
+
+        if st.button("➕ Add to Library", type="primary",
+                     disabled=(std_file is None or not std_name.strip()),
+                     use_container_width=True):
+            st.session_state.standards_library[std_name.strip()] = {
+                "name":        std_name.strip(),
+                "description": std_desc.strip(),
+                "filename":    std_file.name,
+                "file_bytes":  std_file.read(),
+                "media_type":  "application/pdf",
+                "added_date":  datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "size_kb":     round(std_file.size / 1024, 1),
+            }
+            st.success(f"✅ **{std_name}** added!")
+            st.rerun()
+
+        st.divider()
+        st.markdown("**💡 Naming tip:**")
+        st.markdown("Include the spec number and grade in the name and description so the auto-match works reliably:")
+        st.code("Name: ASTM A106 Grade B\nDesc: Seamless carbon steel pipe A106 Gr.B ASME")
+        st.markdown("**What to upload:**")
+        st.markdown("ASME · ASTM · API 5L · EN 10216 · GB/T · ISO · NACE MR0175 · TM0284 · TM0177 · DNV · JIS · Any PDF standard")
+
+    with right2:
+        st.markdown("#### Library Contents")
+        lib = st.session_state.standards_library
+
+        if not lib:
+            st.markdown("""
+            <div style='padding:2.5rem;text-align:center;background:#111318;
+                        border:1px dashed #252830;border-radius:12px;'>
+              <div style='font-size:2.5rem;margin-bottom:.75rem'>📭</div>
+              <div style='font-weight:600;margin-bottom:.5rem'>Library is empty</div>
+              <div style='font-size:.85rem;color:#6b7280;line-height:1.7'>
+                Upload standard PDFs on the left.<br>
+                The more standards you add, the higher the review accuracy.<br><br>
+                <strong>Without library:</strong> AI uses built-in knowledge ⚡<br>
+                <strong>With library:</strong> AI reads your actual documents ✅
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown(f"**{len(lib)} standard(s) loaded** — auto-matching active")
+            st.markdown("")
+
+            for key, entry in list(lib.items()):
+                ca, cb = st.columns([5, 1])
+                with ca:
+                    st.markdown(f"""
+                    <div class="lib-card">
+                      <span style="font-size:1.3rem">📄</span>&nbsp;
+                      <div style="display:inline-block;vertical-align:top">
+                        <div class="lib-card-name">{entry['name']}</div>
+                        <div class="lib-card-meta">{entry['filename']} · {entry['size_kb']} KB · {entry['added_date']}</div>
+                        {f'<div class="lib-card-meta">{entry["description"]}</div>' if entry.get("description") else ''}
+                      </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with cb:
+                    if st.button("🗑️", key=f"del_{key}", help=f"Remove {key}"):
+                        del st.session_state.standards_library[key]
+                        st.rerun()
+
+        st.divider()
+        st.warning("⚠️ **Session storage:** Library resets on page refresh. For permanent storage, commit standard PDFs to your GitHub repo.")
