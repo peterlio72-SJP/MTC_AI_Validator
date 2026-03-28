@@ -81,6 +81,55 @@ STANDARDS = {
         "impact": None,
         "nace": "MR0175/ISO 15156 applicable for sour service",
     },
+  "ASTM A105 — Carbon Steel Forgings": {
+    "key": "ASTM_A105",
+    "chemical": {
+        "C":  {"max": 0.35}, "Mn": {"min": 0.60, "max": 1.05},
+        "P":  {"max": 0.035}, "S": {"max": 0.040},
+        "Si": {"min": 0.10, "max": 0.35},
+        "Cu": {"max": 0.40}, "Ni": {"max": 0.40},
+        "Cr": {"max": 0.30}, "Mo": {"max": 0.12},
+        "V":  {"max": 0.08},
+    },
+    "mechanical": {
+        "UTS (MPa)": {"min": 485},
+        "YS (MPa)":  {"min": 250},
+        "Elongation (%)": {"min": 22},
+        "Reduction of Area (%)": {"min": 30},
+    },
+    "impact": None,
+    "nace": "NACE MR0175 HRC ≤22 for sour service forgings",
+},
+  "ASTM A694 F65 — High Yield Forgings": {
+    "key": "ASTM_A694_F65",
+    "chemical": {
+        "C":  {"max": 0.35}, "Mn": {"max": 1.60},
+        "P":  {"max": 0.035}, "S": {"max": 0.040},
+    },
+    "mechanical": {
+        "UTS (MPa)": {"min": 530},
+        "YS (MPa)":  {"min": 448},
+        "Elongation (%)": {"min": 18},
+        "Reduction of Area (%)": {"min": 30},
+    },
+    "impact": {"temperature": -46, "min_avg_J": 27},
+    "nace": "NACE MR0175 applicable for high-pressure sour service",
+},
+  "EN 10216-2 P265GH — Boiler Tube": {
+    "key": "EN10216_P265GH",
+    "chemical": {
+        "C":  {"max": 0.20}, "Mn": {"min": 0.80, "max": 1.40},
+        "P":  {"max": 0.025}, "S": {"max": 0.020},
+        "Si": {"max": 0.40},
+    },
+    "mechanical": {
+        "UTS (MPa)": {"min": 410, "max": 530},
+        "YS (MPa)":  {"min": 265},
+        "Elongation (%)": {"min": 23},
+    },
+    "impact": {"temperature": -20, "min_avg_J": 27},
+    "nace": "Not typically NACE-classified; verify project spec",
+},
   "API 5L Gr.B — Line Pipe": {
     "key": "API5L_GRB",
     "chemical": {
