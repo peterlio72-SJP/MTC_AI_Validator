@@ -26,7 +26,7 @@ if uploaded_file and api_key:
             m_type = "application/pdf" if uploaded_file.name.lower().endswith('.pdf') else "image/jpeg"
             
             # --- THE URL: Stable V1 Path ---
-            url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
+           url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-pro:generateContent?key={api_key}"
             
             # --- THE PAYLOAD: Using camelCase (inlineData) for the stable API ---
             payload = {
