@@ -23,23 +23,30 @@ with st.sidebar:
 uploaded_file = st.file_uploader("Upload MTC (PDF/Image)", type=['pdf', 'jpg', 'png'])
 
 if uploaded_file:
-    with st.spinner("🤖 AI is reading the certificate..."):
+    with st.spinner("🤖 AI is reviewing compliance..."):
         try:
-            # Using the stable model name
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            # Using the ABSOLUTE path to the model to avoid 404
+            model = genai.GenerativeModel(model_name='models/gemini-1.5-flash')
             
-            # Reset file pointer and read
             uploaded_file.seek(0)
             file_bytes = uploaded_file.read()
             
-            # Check mime type
+            # Determine file type
             m_type = "application/pdf" if uploaded_file.name.lower().endswith('.pdf') else "image/jpeg"
             
-            # Send to AI
-            response = model.generate_content([
-                {"mime_type": m_type, "data": file_bytes},
-                f"Identify Heat Number, Grade, and Hardness on this MTC for {target_material}."
-            ])
+            # Constructing the message in the new format
+            contents = [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"mime_type": m_type, "data": file_bytes},
+                        {"text": f"Identify Heat Number, Grade, and Hardness for {target_material}."}
+                    ]
+                }
+            ]
+            
+            # Call the AI using the robust method
+            response = model.generate_content(contents)
             
             st.subheader("📝 Extraction Results")
             st.markdown(response.text)
