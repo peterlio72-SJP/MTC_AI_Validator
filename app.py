@@ -20,33 +20,35 @@ uploaded_file = st.file_uploader("Upload MTC (PDF/Image)", type=['pdf', 'jpg', '
 if uploaded_file and api_key:
     with st.spinner("🤖 AI Reviewing via Direct Stable Connection..."):
         try:
-            # Convert file to Base64 for a direct REST call
+            # Convert file to Base64
+            uploaded_file.seek(0)
             file_data = base64.b64encode(uploaded_file.read()).decode('utf-8')
             m_type = "application/pdf" if uploaded_file.name.lower().endswith('.pdf') else "image/jpeg"
             
-            # THE DIRECT URL (Forcing V1 Stable, NOT Beta)
-            url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
+            # --- THE FIX: Using the exact stable model identifier ---
+            # We use 'gemini-1.5-flash-latest' which is the standard for V1
+            url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash-latest:generateContent?key={api_key}"
             
             payload = {
                 "contents": [{
                     "parts": [
-                        {"text": f"Extract Heat Number, Grade, and Hardness for {target_material} from this MTC."},
+                        {"text": f"You are a QC Engineer. Extract Heat Number, Grade, and Hardness for {target_material} from this MTC."},
                         {"inline_data": {"mime_type": m_type, "data": file_data}}
                     ]
                 }]
             }
             
-            # Send the request manually
+            # Send the request
             response = requests.post(url, json=payload)
             res_json = response.json()
             
-            # Extract text from the direct response
             if "candidates" in res_json:
                 output_text = res_json['candidates'][0]['content']['parts'][0]['text']
                 st.subheader("📝 Results")
                 st.markdown(output_text)
             else:
-                st.error(f"API Error: {res_json}")
+                # If it still fails, this shows us the exact server feedback
+                st.error(f"API Error Detail: {res_json}")
                 
         except Exception as e:
             st.error(f"Technical Failure: {str(e)}")
