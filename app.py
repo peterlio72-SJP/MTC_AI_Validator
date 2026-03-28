@@ -1,4 +1,12 @@
 import streamlit as st
+import google.generativeai as genai
+
+# This line links your secret key to the AI engine
+if "GOOGLE_API_KEY" in st.secrets:
+    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+else:
+    st.error("API Key not found in Streamlit Secrets!")
+import streamlit as st
 import pandas as pd
 
 # --- Professional UI Setup ---
