@@ -25,15 +25,14 @@ if uploaded_file and api_key:
             file_data = base64.b64encode(uploaded_file.read()).decode('utf-8')
             m_type = "application/pdf" if uploaded_file.name.lower().endswith('.pdf') else "image/jpeg"
             
-          
-            # --- THE ULTIMATE STABLE URL ---
-url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-pro-002:generateContent?key={api_key}"
+            # --- THE URL: Stable V1 Path with the -002 Production Model ---
+            url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-pro-002:generateContent?key={api_key}"
             
             # --- THE PAYLOAD ---
             payload = {
                 "contents": [{
                     "parts": [
-                        {"text": f"Extract Heat Number, Grade, and Hardness for {target_material} from this MTC."},
+                        {"text": f"You are a Quality Control Engineer. Extract Heat Number, Grade, and Hardness for {target_material} from this MTC certificate."},
                         {
                             "inlineData": {
                                 "mimeType": m_type,
@@ -59,4 +58,4 @@ url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-pro-002:g
             st.error(f"Technical Failure: {str(e)}")
 
 elif not api_key:
-    st.warning("API Key missing from Secrets.")
+    st.warning("API Key missing from Secrets. Please add the new key ending in 'Mbl'.")
