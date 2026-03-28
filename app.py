@@ -24,26 +24,29 @@ uploaded_file = st.file_uploader("Drop MTC File (PDF or Image)", type=['pdf', 'j
 if uploaded_file:
     with st.spinner("🤖 AI is reviewing compliance..."):
         try:
-            # Universal Model Name
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            # TRYING THE PRO MODEL (Often more stable with PDFs)
+            model = genai.GenerativeModel('gemini-1.5-pro')
             
-            # CRITICAL: Reset file pointer to the beginning
+            # Important: Ensure the file is read correctly
             uploaded_file.seek(0)
             file_data = uploaded_file.read()
             
-            mime_type = "application/pdf" if uploaded_file.name.lower().endswith('.pdf') else "image/jpeg"
+            # Prepare the content list
+            content_to_send = [
+                {"mime_type": "application/pdf" if uploaded_file.name.lower().endswith('.pdf') else "image/jpeg", 
+                 "data": file_data},
+                f"Identify the Heat Number and Material Grade on this MTC. Target: {target_material}."
+            ]
             
-            # Call AI
-            response = model.generate_content([
-                {"mime_type": mime_type, "data": file_data},
-                f"Identify material grade, heat number, and hardness on this MTC for {target_material}."
-            ])
+            # Explicitly telling it to generate content
+            response = model.generate_content(content_to_send)
             
             st.subheader("📝 AI Extraction Results")
             st.markdown(response.text)
             
         except Exception as e:
-            st.error(f"Technical Error: {e}")
+            # This will show us if the error changed
+            st.error(f"Current Technical Error: {e}")
 
 # If no file is uploaded, show the empty table as a placeholder
 else:
