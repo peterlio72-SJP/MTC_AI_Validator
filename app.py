@@ -24,36 +24,26 @@ uploaded_file = st.file_uploader("Drop MTC File (PDF or Image)", type=['pdf', 'j
 if uploaded_file:
     with st.spinner("🤖 AI is reviewing compliance..."):
         try:
-            # Prepare the Model
-            model = genai.GenerativeModel('models/gemini-1.5-flash-latest')
+            # Universal Model Name
+            model = genai.GenerativeModel('gemini-1.5-flash')
             
-            # Convert file for AI
+            # CRITICAL: Reset file pointer to the beginning
+            uploaded_file.seek(0)
             file_data = uploaded_file.read()
-            mime_type = "application/pdf" if uploaded_file.name.endswith('.pdf') else "image/jpeg"
             
-            # The Prompt: Telling AI what to look for based on your buttons
-            prompt = f"""
-            Review this MTC for {target_material} ({eng_code}). 
-            Sour Service requirement: {sour_service}.
-            Extract values for:
-            - Hardness (Max value found)
-            - Carbon Equivalent (CE)
-            - Heat Treatment (Normalized/As-Rolled)
-            - Material Group (P-Number)
-            Return ONLY a table-friendly format.
-            """
+            mime_type = "application/pdf" if uploaded_file.name.lower().endswith('.pdf') else "image/jpeg"
             
             # Call AI
-            response = model.generate_content([prompt, {"mime_type": mime_type, "data": file_data}])
+            response = model.generate_content([
+                {"mime_type": mime_type, "data": file_data},
+                f"Identify material grade, heat number, and hardness on this MTC for {target_material}."
+            ])
             
-            # Display Real AI Results
             st.subheader("📝 AI Extraction Results")
             st.markdown(response.text)
             
-            st.success("Analysis Complete based on your specific criteria!")
-
         except Exception as e:
-            st.error(f"Error reading file: {e}")
+            st.error(f"Technical Error: {e}")
 
 # If no file is uploaded, show the empty table as a placeholder
 else:
