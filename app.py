@@ -27,15 +27,20 @@ if uploaded_file and api_key:
             
             # Force the most universal stable model name
 url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={api_key}"
-            
+url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-pro:generateContent?key={api_key}"            
             payload = {
-                "contents": [{
-                    "parts": [
-                        {"text": f"You are a QC Engineer. Extract Heat Number, Grade, and Hardness for {target_material} from this MTC."},
-                        {"inline_data": {"mime_type": m_type, "data": file_data}}
-                    ]
-                }]
+    "contents": [{
+        "parts": [
+            {"text": f"Extract Heat Number, Grade, and Hardness for {target_material}."},
+            {
+                "inlineData": {
+                    "mimeType": m_type,
+                    "data": file_data
+                }
             }
+        ]
+    }]
+}
             
             # Send the request
             response = requests.post(url, json=payload)
