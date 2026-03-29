@@ -75,7 +75,7 @@ if uploaded:
             # Call Claude
             client = anthropic.Anthropic(api_key=key)
             response = client.messages.create(
-                model="claude-opus-4-5",
+                model="claude-sonnet-4-6",
                 max_tokens=3000,
                 system="""You are a senior materials engineer specializing in
 mill certificate review against ASME, ASTM, API 5L, EN, GB/T, and NACE standards.
