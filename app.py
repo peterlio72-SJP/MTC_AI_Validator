@@ -1,5 +1,6 @@
 import streamlit as st
 import anthropic
+import httpx
 import base64
 import json
 
@@ -12,7 +13,13 @@ if uploaded:
     if st.button("Review"):
         data = uploaded.read()
         b64 = base64.b64encode(data).decode()
-        client = anthropic.Anthropic(api_key=key)
+       client = anthropic.Anthropic(
+    api_key=st.secrets["ANTHROPIC_API_KEY"],
+    http_client=httpx.Client(
+        headers={"User-Agent": "MatCert/1.0"},
+        timeout=60.0
+    )
+)
         r = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=2000,
