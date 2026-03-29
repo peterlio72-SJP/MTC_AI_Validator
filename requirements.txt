@@ -1,5 +1,4 @@
 anthropic
 python-dotenv
 openpyxl
-twilio
  
