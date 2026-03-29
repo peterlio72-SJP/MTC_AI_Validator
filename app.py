@@ -73,7 +73,7 @@ if uploaded:
                 }
 
             # Call Claude
-            client = anthropic.Anthropic(api_key=key)
+            client = anthropic.Anthropic(api_key=key, tomeout=60.0)
             response = client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=3000,
