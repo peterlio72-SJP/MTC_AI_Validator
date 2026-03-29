@@ -14,7 +14,7 @@ if uploaded:
         b64 = base64.b64encode(data).decode()
         client = anthropic.Anthropic(api_key=key)
         r = client.messages.create(
-            model="claude-opus-4-5",
+            model="claude-opus-4-5-20251101",
             max_tokens=2000,
             messages=[{"role":"user","content":[
                 {"type":"document","source":{"type":"base64","media_type":"application/pdf","data":b64}},
