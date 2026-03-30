@@ -130,13 +130,30 @@ Respond ONLY in valid JSON, no markdown:
                 }]
             )
 
-            # Parse response
-            raw = response.content[0].text.strip()
-            if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-            result = json.loads(raw.strip())
+           # Parse response
+        raw = response.content[0].text.strip()
+        # Remove markdown fences
+        if "```" in raw:
+            parts = raw.split("```")
+            for part in parts:
+                part = part.strip()
+                if part.startswith("json"):
+                    part = part[4:]
+                part = part.strip()
+                if part.startswith("{"):
+                    raw = part
+                    break
+        # Find JSON object
+        start = raw.find("{")
+        end   = raw.rfind("}") + 1
+        if start >= 0 and end > start:
+            raw = raw[start:end]
+        result = json.loads(raw)
+```
+
+**Commit → then in Command Prompt press `Ctrl+C` then:**
+```
+py -m streamlit run app.py
 
         # ── Store in session ──────────────────────────
         st.session_state["result"]   = result
