@@ -149,11 +149,7 @@ Respond ONLY in valid JSON, no markdown:
         if start >= 0 and end > start:
             raw = raw[start:end]
         result = json.loads(raw)
-```
 
-**Commit → then in Command Prompt press `Ctrl+C` then:**
-```
-py -m streamlit run app.py
 
         # ── Store in session ──────────────────────────
         st.session_state["result"]   = result
